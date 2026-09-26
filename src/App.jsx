@@ -362,6 +362,30 @@ function Logo({ size = 64 }) {
   );
 }
 
+
+// ─── LIGA: genera los 6 partidos de clasificación por posición ────────────────
+// 1°A vs 1°B → puesto 1/2
+// 2°A vs 2°B → puesto 3/4
+// 3°A vs 3°B → puesto 5/6
+// 4°A vs 4°B → puesto 7/8
+// 5°A vs 5°B → puesto 9/10
+// 6°A vs 6°B → puesto 11/12
+function buildLigaClassification(players, matches) {
+  const stats = computeGroupStats(players, matches);
+  const groupA = sortGroup(players.filter(p => p.group === 0), stats, matches);
+  const groupB = sortGroup(players.filter(p => p.group === 1), stats, matches);
+  const posLabels = ["1°/2°","3°/4°","5°/6°","7°/8°","9°/10°","11°/12°"];
+  return groupA.map((pA, i) => ({
+    id: uid(),
+    phase: "liga_class",
+    slot: i,
+    posLabel: posLabels[i] || `${i*2+1}°/${i*2+2}°`,
+    p1: pA?.id ?? null,
+    p2: groupB[i]?.id ?? null,
+    result: null,
+  }));
+}
+
 // ─── SCORE MODAL ──────────────────────────────────────────────────────────────
 function ScoreModal({ match, players, onSave, onClose }) {
   const p1 = players.find(p => p.id === match.p1);
@@ -545,16 +569,19 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
   const handleCreate = () => {
     const cleanName = sanitize(name);
     if (!cleanName) return;
-    const ng = tournType === "roundrobin" ? 1 : numGroups;
-    const players = playerData.slice(0, numPlayers).map((pd, i) => ({
+    const isLiga = tournType === "liga";
+    const isRR   = tournType === "roundrobin";
+    const ng = isRR ? 1 : isLiga ? 2 : numGroups;
+    const np = isLiga ? 12 : numPlayers;
+    const players = playerData.slice(0, np).map((pd, i) => ({
       id: uid(),
       name: pd.name || `Jugador ${i+1}`,
-      group: tournType === "roundrobin" ? 0 : Math.min(pd.group, ng - 1),
+      group: isRR ? 0 : Math.min(pd.group ?? 0, ng - 1),
     }));
     onCreate({
       id: uid(), name: cleanName, createdAt: Date.now(),
       phase: "setup", tournType,
-      players, matches: [], koMatches: [], numGroups: ng,
+      players, matches: [], koMatches: [], ligaMatches: [], numGroups: ng,
     });
     setShowNew(false); setName(""); setNumPlayers(8); setNumGroups(2);
     setPlayerData(Array.from({length:8}, (_, i) => ({ name: `Jugador ${i+1}`, group: 0 })));
@@ -567,6 +594,11 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
       return allDone ? { label: "Finalizado 🏆", color: C.accent } : { label: "Todos contra todos", color: C.tealMd };
     }
     if (t.phase === "groups") return { label: "Fase de grupos", color: C.tealMd };
+    if (t.phase === "liga_groups") return { label: "Liga · Fase de grupos", color: C.tealMd };
+    if (t.phase === "liga_class") {
+      const allDone = t.ligaMatches?.every(m => m.result);
+      return allDone ? { label: "Liga · Finalizada 🏆", color: C.accent } : { label: "Liga · Clasificación", color: C.tealMd };
+    }
     if (t.phase === "knockout") {
       const champ = t.koMatches?.find(m=>m.phase==="final")?.result?.winner;
       return champ
@@ -657,7 +689,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
                 </div>
                 <h3 style={{ margin:"0 0 6px", fontFamily:FONT_DISPLAY, color:C.teal, fontSize:17 }}>{t.name}</h3>
                 <p style={{ margin:"0 0 14px", color:C.muted, fontSize:12 }}>
-                  {t.players?.length} jugadores · {t.tournType === "roundrobin" ? "Todos contra todos" : `${t.numGroups} grupos`}
+                  {t.players?.length} jugadores · {t.tournType === "roundrobin" ? "Todos contra todos" : t.tournType === "liga" ? "Liga" : `${t.numGroups} grupos`}
                 </p>
                 {champName && (
                   <div style={{ fontSize:12, color:C.accent, fontWeight:700, marginBottom:10 }}>🏆 {champName}</div>
@@ -690,12 +722,13 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
 
             {/* Tipo de torneo */}
             <label style={{ display:"block", marginBottom:10, fontSize:13, color:C.teal, fontWeight:600 }}>Formato</label>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:20 }}>
               {[
-                { val:"groups", label:"Por grupos", desc:"Fase de grupos + eliminatorias" },
+                { val:"groups",     label:"Por grupos",         desc:"Fase de grupos + eliminatorias" },
                 { val:"roundrobin", label:"Todos contra todos", desc:"Un solo grupo, gana el mejor" },
+                { val:"liga",       label:"Liga",               desc:"12 jugadores, 2 grupos, clasificación por posición" },
               ].map(opt => (
-                <div key={opt.val} onClick={() => setTournType(opt.val)} style={{
+                <div key={opt.val} onClick={() => { setTournType(opt.val); if(opt.val==="liga"){setNumPlayers(12);setNumGroups(2);} }} style={{
                   padding:"12px 14px", borderRadius:10, border:`1.5px solid ${tournType===opt.val ? C.teal : C.border}`,
                   background: tournType===opt.val ? C.tealLt : C.bg, cursor:"pointer",
                 }}>
@@ -705,17 +738,25 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
               ))}
             </div>
 
-            {/* Cantidad de jugadores */}
-            <label style={{ display:"block", marginBottom:8, fontSize:13, color:C.teal, fontWeight:600 }}>Cantidad de jugadores</label>
-            <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:20 }}>
-              {[4,6,8,10,12,16,20,24,32].map(n => (
-                <button key={n} onClick={()=>setNumPlayers(n)} style={{
-                  padding:"6px 14px", borderRadius:8, border:`1.5px solid ${numPlayers===n ? C.teal : C.border}`,
-                  background: numPlayers===n ? C.tealLt : C.bg, color: numPlayers===n ? C.teal : C.muted,
-                  cursor:"pointer", fontWeight: numPlayers===n ? 700 : 400, fontSize:13
-                }}>{n}</button>
-              ))}
-            </div>
+            {/* Cantidad de jugadores — fijo para liga */}
+            {tournType === "liga" ? (
+              <div style={{ padding:"10px 14px", background:C.tealXlt, borderRadius:9, marginBottom:20, fontSize:13, color:C.teal, fontWeight:600 }}>
+                Liga: 12 jugadores · 2 grupos fijos
+              </div>
+            ) : (
+              <>
+                <label style={{ display:"block", marginBottom:8, fontSize:13, color:C.teal, fontWeight:600 }}>Cantidad de jugadores</label>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:20 }}>
+                  {[4,6,8,10,12,16,20,24,32].map(n => (
+                    <button key={n} onClick={()=>setNumPlayers(n)} style={{
+                      padding:"6px 14px", borderRadius:8, border:`1.5px solid ${numPlayers===n ? C.teal : C.border}`,
+                      background: numPlayers===n ? C.tealLt : C.bg, color: numPlayers===n ? C.teal : C.muted,
+                      cursor:"pointer", fontWeight: numPlayers===n ? 700 : 400, fontSize:13
+                    }}>{n}</button>
+                  ))}
+                </div>
+              </>
+            )}
 
             {/* Cantidad de grupos — solo si es por grupos */}
             {tournType === "groups" && (
@@ -746,7 +787,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
                     style={{ flex:1, background:"none", border:"none", outline:"none", color:C.text, fontSize:12 }}
                     placeholder={`Jugador ${i+1}`}
                   />
-                  {tournType === "groups" && (
+                  {(tournType === "groups" || tournType === "liga") && (
                     <select
                       value={playerData[i]?.group ?? 0}
                       onChange={e => setPlayerGroup(i, e.target.value)}
@@ -769,6 +810,195 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
               Crear torneo →
             </button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── LIGA GROUPS VIEW ────────────────────────────────────────────────────────
+function LigaGroupsView({ tournament, onUpdate, isAdmin, canEdit }) {
+  const { players, matches, numGroups } = tournament;
+  const [modal, setModal] = useState(null);
+  const stats = computeGroupStats(players, matches);
+
+  const handleScore = (matchId, result) => {
+    onUpdate({ ...tournament, matches: matches.map(m => m.id===matchId ? {...m, result} : m) });
+    setModal(null);
+  };
+
+  const allDone = matches.every(m => m.result);
+
+  const handleAdvanceToClass = () => {
+    const ligaMatches = buildLigaClassification(players, matches);
+    onUpdate({ ...tournament, phase:"liga_class", ligaMatches });
+  };
+
+  return (
+    <div>
+      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Liga · Fase de Grupos</h2>
+          <p style={{ margin:"4px 0 0", color:C.muted, fontSize:12 }}>Top 6 por grupo · Clasificación por posición</p>
+        </div>
+        {allDone && isAdmin && (
+          <button onClick={handleAdvanceToClass} style={{ padding:"8px 16px", background:C.teal, border:"none", borderRadius:9, color:C.white, cursor:"pointer", fontSize:13, fontWeight:700 }}>
+            Avanzar a Clasificación →
+          </button>
+        )}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+        {Array.from({length:2}, (_, g) => {
+          const gp = players.filter(p => p.group === g);
+          const sorted = sortGroup(gp, stats, matches);
+          const gMatches = matches.filter(m => m.group === g);
+          const gDone = gMatches.every(m => m.result);
+          return (
+            <div key={g} style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 10px ${C.shadow}` }}>
+              <div style={{ padding:"12px 16px", background:gDone ? C.tealXlt : C.teal, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span style={{ fontFamily:FONT_DISPLAY, fontWeight:700, fontSize:15, color:gDone ? C.teal : C.white }}>
+                  Grupo {String.fromCharCode(65+g)}
+                </span>
+                {gDone && <span style={{ fontSize:11, color:C.tealMd, fontWeight:700 }}>✓ COMPLETO</span>}
+              </div>
+              <div style={{ padding:"10px 14px 6px" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"24px 1fr 28px 28px 28px 48px", fontSize:10, color:C.mutedLt, fontWeight:600, letterSpacing:.5, paddingBottom:6, borderBottom:`1px solid ${C.border}`, gap:4 }}>
+                  <span>POS</span><span>JUGADOR</span><span style={{textAlign:"center"}}>PJ</span><span style={{textAlign:"center"}}>G</span><span style={{textAlign:"center"}}>P</span><span style={{textAlign:"center"}}>SETS</span>
+                </div>
+                {sorted.map((p, rank) => (
+                  <div key={p.id} style={{ display:"grid", gridTemplateColumns:"24px 1fr 28px 28px 28px 48px", alignItems:"center", gap:4, padding:"7px 0", borderBottom:`1px solid ${C.border}33` }}>
+                    <span style={{ fontSize:12, fontWeight:700, color:C.teal, textAlign:"center" }}>{rank+1}°</span>
+                    <span style={{ fontSize:13, color:C.text }}>{p.name}</span>
+                    <span style={{ textAlign:"center", fontSize:12, color:C.muted }}>{p.wins+p.losses}</span>
+                    <span style={{ textAlign:"center", fontSize:12, color:C.win, fontWeight:600 }}>{p.wins}</span>
+                    <span style={{ textAlign:"center", fontSize:12, color:C.lose }}>{p.losses}</span>
+                    <span style={{ textAlign:"center", fontSize:12, color:C.muted }}>{p.setsWon}-{p.setsLost}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ padding:"6px 14px 12px" }}>
+                <p style={{ fontSize:10, color:C.mutedLt, letterSpacing:.5, fontWeight:600, margin:"6px 0 6px" }}>PARTIDOS</p>
+                {gMatches.map(m => {
+                  const pp1 = players.find(p=>p.id===m.p1), pp2 = players.find(p=>p.id===m.p2);
+                  const r = m.result;
+                  return (
+                    <div key={m.id} onClick={()=> canEdit && setModal(m)} style={{
+                      display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:6,
+                      padding:"8px 10px", borderRadius:8, marginBottom:4, cursor: canEdit ? "pointer" : "default",
+                      background: r ? C.tealXlt : C.bg, border:`1px solid ${r ? C.teal+"22" : C.border}`,
+                    }}>
+                      <span style={{ fontSize:12, color: r?.winner===m.p1?C.teal:C.muted, fontWeight: r?.winner===m.p1?700:400 }}>{pp1?.name}</span>
+                      <span style={{ fontSize:12, color:C.teal, fontWeight:700, minWidth:44, textAlign:"center" }}>
+                        {r ? (r.doubleWO?"WO/WO":r.walkover?`W/O`:`${r.p1Sets}–${r.p2Sets}`) : "vs"}
+                      </span>
+                      <span style={{ fontSize:12, color: r?.winner===m.p2?C.teal:C.muted, fontWeight: r?.winner===m.p2?700:400, textAlign:"right" }}>{pp2?.name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── LIGA CLASS VIEW ──────────────────────────────────────────────────────────
+function LigaClassView({ tournament, onUpdate, isAdmin, canEdit }) {
+  const { players, matches, ligaMatches = [] } = tournament;
+  const [modal, setModal] = useState(null);
+
+  const handleScore = (matchId, result) => {
+    onUpdate({ ...tournament, ligaMatches: ligaMatches.map(m => m.id===matchId ? {...m, result} : m) });
+    setModal(null);
+  };
+
+  const allDone = ligaMatches.length > 0 && ligaMatches.every(m => m.result);
+
+  // Build final ranking from liga classification results
+  const finalRanking = [];
+  ligaMatches.forEach(m => {
+    const r = m.result;
+    if (!r) return;
+    const pos = m.slot * 2; // 0→1°,2°  1→3°,4°  etc
+    if (r.doubleWO) {
+      // Ambos ausentes — orden por grupos
+      const p1 = players.find(p=>p.id===m.p1);
+      const p2 = players.find(p=>p.id===m.p2);
+      finalRanking[pos]     = { player: p1, pos: pos+1,   match: m };
+      finalRanking[pos + 1] = { player: p2, pos: pos+2, match: m };
+    } else {
+      const winner = players.find(p=>p.id===r.winner);
+      const loser  = players.find(p=>p.id===r.loser);
+      finalRanking[pos]     = { player: winner, pos: pos+1,   match: m };
+      finalRanking[pos + 1] = { player: loser,  pos: pos+2, match: m };
+    }
+  });
+
+  const posRanges = ["1° y 2°","3° y 4°","5° y 6°","7° y 8°","9° y 10°","11° y 12°"];
+
+  return (
+    <div>
+      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Liga · Clasificación</h2>
+          <p style={{ margin:"4px 0 0", color:C.muted, fontSize:12 }}>Cada posición del Grupo A vs misma posición Grupo B</p>
+        </div>
+        {allDone && <span style={{ fontSize:12, color:C.win, background:C.winBg, padding:"6px 14px", borderRadius:20, fontWeight:700 }}>✓ Liga completada</span>}
+      </div>
+
+      {/* Clasificación matches */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:24 }}>
+        {ligaMatches.map((m, i) => {
+          const pp1 = players.find(p=>p.id===m.p1);
+          const pp2 = players.find(p=>p.id===m.p2);
+          const r = m.result;
+          return (
+            <div key={m.id} style={{ background:C.white, borderRadius:12, border:`1px solid ${r ? C.teal+"33" : C.border}`, overflow:"hidden", boxShadow:`0 2px 8px ${C.shadow}` }}>
+              <div style={{ padding:"8px 14px", background: r ? C.tealXlt : C.bg, borderBottom:`1px solid ${C.border}` }}>
+                <span style={{ fontSize:11, color:C.teal, fontWeight:700, letterSpacing:.5 }}>PUESTO {posRanges[i]}</span>
+              </div>
+              <div onClick={() => canEdit && setModal(m)} style={{ padding:"12px 14px", cursor: canEdit ? "pointer" : "default" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:13, color: r?.winner===m.p1?C.teal:C.text, fontWeight: r?.winner===m.p1?700:400 }}>{pp1?.name}</span>
+                  <span style={{ color:C.teal, fontWeight:800, fontSize:18, minWidth:48, textAlign:"center" }}>
+                    {r ? (r.doubleWO?"WO/WO":r.walkover?"W/O":`${r.p1Sets}–${r.p2Sets}`) : "vs"}
+                  </span>
+                  <span style={{ fontSize:13, color: r?.winner===m.p2?C.teal:C.text, fontWeight: r?.winner===m.p2?700:400, textAlign:"right" }}>{pp2?.name}</span>
+                </div>
+                {r?.winner && (
+                  <p style={{ margin:"8px 0 0", fontSize:11, color:C.win, textAlign:"center" }}>
+                    🏆 {players.find(p=>p.id===r.winner)?.name} → {posRanges[i]?.split(" y ")[0]}
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Final ranking */}
+      {allDone && (
+        <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 10px ${C.shadow}` }}>
+          <div style={{ padding:"12px 16px", background:C.teal }}>
+            <span style={{ color:C.white, fontWeight:700, fontFamily:FONT_DISPLAY }}>Ranking Final de la Liga</span>
+          </div>
+          {finalRanking.filter(Boolean).map((entry, i) => (
+            <div key={i} style={{ display:"flex", alignItems:"center", gap:14, padding:"11px 16px", borderBottom:`1px solid ${C.border}33`, background: i===0?C.tealXlt:i%2===0?C.bg:C.white }}>
+              <span style={{ fontSize: i<3?18:14, fontWeight:700, minWidth:32, textAlign:"center",
+                color: i===0?"#d4a017":i===1?"#9e9e9e":i===2?"#a0714f":C.mutedLt }}>
+                {i===0?"🥇":i===1?"🥈":i===2?"🥉":`${i+1}°`}
+              </span>
+              <span style={{ flex:1, fontSize:14, color:C.text, fontWeight: i<3?700:400 }}>{entry.player?.name}</span>
+              <span style={{ fontSize:12, color:C.muted }}>Puesto {entry.pos}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1377,8 +1607,8 @@ function RankingView({ tournament }) {
 function HistoryView({ tournament }) {
   const { players, matches, koMatches } = tournament;
   const [filterPlayer, setFilterPlayer] = useState(""); // player id or ""
-  const allMatches = [...(matches||[]), ...(koMatches||[])].filter(m=>m.result).reverse();
-  const phaseLabel = { group:"Grupos", qf:"Cuartos", sf:"Semifinal", final:"Final", bronze:"3° Puesto", roundrobin:"Todos contra todos" };
+  const allMatches = [...(matches||[]), ...(koMatches||[]), ...(tournament.ligaMatches||[])].filter(m=>m.result).reverse();
+  const phaseLabel = { group:"Grupos", qf:"Cuartos", sf:"Semifinal", final:"Final", bronze:"3° Puesto", roundrobin:"Todos contra todos", liga_class:"Liga · Clasificación" };
 
   const filtered = filterPlayer
     ? allMatches.filter(m => m.p1 === filterPlayer || m.p2 === filterPlayer)
@@ -1552,6 +1782,10 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail, i
     ? [{ id:"roundrobin", label:"Partidos" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }]
     : tournament.phase === "groups"
     ? [{ id:"groups", label:"Grupos" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }]
+    : tournament.phase === "liga_groups"
+    ? [{ id:"liga_groups", label:"Grupos" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }]
+    : tournament.phase === "liga_class"
+    ? [{ id:"liga_class", label:"Clasificación" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }]
     : [{ id:"bracket", label:"Bracket" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }];
 
   const defaultTab = tabs[0].id;
@@ -1634,12 +1868,14 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail, i
       </header>
 
       <main style={{ maxWidth:900, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="setup"      && <SetupView       tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
-        {tab==="groups"     && <GroupPhaseView  tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
-        {tab==="roundrobin" && <RoundRobinView  tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
-        {tab==="bracket"    && <KnockoutView    tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
-        {tab==="ranking"    && <RankingView     tournament={tournament}/>}
-        {tab==="history"    && <HistoryView     tournament={tournament}/>}
+        {tab==="setup"      && <SetupView        tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="groups"     && <GroupPhaseView   tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="roundrobin" && <RoundRobinView   tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="liga_groups"&& <LigaGroupsView   tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="liga_class" && <LigaClassView    tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="bracket"    && <KnockoutView     tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="ranking"    && <RankingView      tournament={tournament}/>}
+        {tab==="history"    && <HistoryView      tournament={tournament}/>}
       </main>
     </div>
   );
