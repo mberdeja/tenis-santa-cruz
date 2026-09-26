@@ -1,14 +1,16 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAWDmKePVrlUwhAv1fzaP1wDB6Iwc8GLqw",
-  authDomain: "tenis-de-mesa-42430.firebaseapp.com",
-  projectId: "tenis-de-mesa-42430",
-  storageBucket: "tenis-de-mesa-42430.firebasestorage.app",
-  messagingSenderId: "405689823091",
-  appId: "1:405689823091:web:ec3f5fee47e1aa391c1f06"
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+export const db  = getFirestore(app);
+export const auth = getAuth(app);

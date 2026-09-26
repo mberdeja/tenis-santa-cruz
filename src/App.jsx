@@ -4,6 +4,12 @@ import {
   collection, doc, onSnapshot,
   setDoc, deleteDoc, serverTimestamp
 } from "firebase/firestore";
+import {
+  getAuth, signInWithEmailAndPassword,
+  signOut, onAuthStateChanged
+} from "firebase/auth";
+
+const auth = getAuth();
 
 // ─── PALETTE (basada en el logo: teal oscuro, blanco, grises cálidos) ─────────
 const C = {
@@ -44,12 +50,62 @@ function shuffle(arr) {
   return a;
 }
 
+// ─── SECURITY: sanitize text input — strip HTML/scripts/injections ──────────
+function sanitize(str) {
+  if (typeof str !== "string") return "";
+  return str
+    .replace(/[<>"'`]/g, "")           // strip HTML chars
+    .replace(/javascript:/gi, "")         // no js: URIs
+    .replace(/on\w+\s*=/gi, "")           // no onerror= etc
+    .replace(/\s+/g, " ")                 // collapse whitespace
+    .trim()
+    .slice(0, 100);                        // max 100 chars
+}
+
+// ─── HEAD-TO-HEAD tiebreak among a subset of players ─────────────────────────
+// Returns players sorted by: 1) H2H wins, 2) H2H set diff, 3) H2H pts diff
+function headToHeadSort(playerSubset, allMatches) {
+  const ids = playerSubset.map(p => p.id);
+  // Filter only matches between players in this subset
+  const h2hMatches = allMatches.filter(m =>
+    m.result && ids.includes(m.p1) && ids.includes(m.p2)
+  );
+  const h2h = {};
+  ids.forEach(id => { h2h[id] = { wins: 0, setsWon: 0, setsLost: 0, ptsWon: 0, ptsLost: 0 }; });
+  h2hMatches.forEach(m => {
+    const r = m.result;
+    if (r.walkover) {
+      h2h[r.winner].wins++;
+    } else {
+      h2h[r.winner].wins++;
+      h2h[m.p1].setsWon  += r.p1Sets; h2h[m.p1].setsLost += r.p2Sets;
+      h2h[m.p2].setsWon  += r.p2Sets; h2h[m.p2].setsLost += r.p1Sets;
+      h2h[m.p1].ptsWon   += r.p1Pts;  h2h[m.p1].ptsLost  += r.p2Pts;
+      h2h[m.p2].ptsWon   += r.p2Pts;  h2h[m.p2].ptsLost  += r.p1Pts;
+    }
+  });
+  return [...playerSubset].sort((a, b) => {
+    const ha = h2h[a.id], hb = h2h[b.id];
+    if (hb.wins !== ha.wins) return hb.wins - ha.wins;
+    const aDiff = ha.setsWon - ha.setsLost, bDiff = hb.setsWon - hb.setsLost;
+    if (bDiff !== aDiff) return bDiff - aDiff;
+    return (hb.ptsWon - hb.ptsLost) - (ha.ptsWon - ha.ptsLost);
+  });
+}
+
 function isSetValid(a, b) {
   const na = parseInt(a), nb = parseInt(b);
-  if (isNaN(na) || isNaN(nb)) return false;
+  if (isNaN(na) || isNaN(nb) || na < 0 || nb < 0) return false;
   const hi = Math.max(na, nb), lo = Math.min(na, nb);
+  // Ganador necesita al menos 11 puntos
   if (hi < 11) return false;
+  // Ventaja mínima de 2
   if (hi - lo < 2) return false;
+  // Si uno llegó a 11+, el otro no puede tener más de hi-2
+  // Ej: 11-9 ✓, 12-10 ✓, 13-11 ✓, 7-13 ✗ (no puede ser 13 si el otro no llegó a 11)
+  // El ganador es el primero que llega a 11 con ventaja de 2
+  // Si hi > 11, el lo debe ser hi-2 exactamente (no puede haber más margen si ya se pasó)
+  if (hi > 11 && hi - lo !== 2) return false;
   return true;
 }
 
@@ -89,13 +145,29 @@ function computeGroupStats(players, matches) {
   return stats;
 }
 
-function sortGroup(players, stats) {
-  return [...players].map(p => stats[p.id]).sort((a, b) => {
+function sortGroup(players, stats, allMatches = []) {
+  const mapped = [...players].map(p => stats[p.id]);
+  // Primary sort by wins
+  mapped.sort((a, b) => {
     if (b.wins !== a.wins) return b.wins - a.wins;
     if ((b.setsWon - b.setsLost) !== (a.setsWon - a.setsLost))
       return (b.setsWon - b.setsLost) - (a.setsWon - a.setsLost);
     return (b.ptsWon - b.ptsLost) - (a.ptsWon - a.ptsLost);
   });
+  // Find tied groups and apply head-to-head tiebreak
+  let i = 0;
+  while (i < mapped.length) {
+    let j = i + 1;
+    while (j < mapped.length && mapped[j].wins === mapped[i].wins) j++;
+    if (j - i > 1) {
+      // Group of tied players — apply H2H
+      const tiedSlice = mapped.slice(i, j);
+      const sorted = headToHeadSort(tiedSlice, allMatches);
+      for (let k = 0; k < sorted.length; k++) mapped[i + k] = sorted[k];
+    }
+    i = j;
+  }
+  return mapped;
 }
 
 // Construye el bracket KO dinámicamente según cantidad de clasificados:
@@ -429,29 +501,55 @@ function ScoreModal({ match, players, onSave, onClose }) {
 }
 
 // ─── TOURNAMENT HOME (list) ────────────────────────────────────────────────────
-function TournamentHome({ tournaments, onCreate, onOpen, onDelete }) {
+function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, userEmail }) {
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
-  const [numPlayers, setNumPlayers] = useState(16);
-  const [playerNames, setPlayerNames] = useState(Array.from({length:16},(_,i)=>`Jugador ${i+1}`));
+  const [tournType, setTournType] = useState("groups"); // "groups" | "roundrobin"
+  const [numPlayers, setNumPlayers] = useState(8);
+  const [numGroups, setNumGroups] = useState(2);
+  const [playerData, setPlayerData] = useState(
+    Array.from({length:8}, (_, i) => ({ name: `Jugador ${i+1}`, group: 0 }))
+  );
 
   useEffect(() => {
-    setPlayerNames(prev => Array.from({length:numPlayers},(_,i) => prev[i] || `Jugador ${i+1}`));
-  }, [numPlayers]);
+    setPlayerData(prev => Array.from({length:numPlayers}, (_, i) => ({
+      name: prev[i]?.name || `Jugador ${i+1}`,
+      group: tournType === "roundrobin" ? 0 : Math.min(prev[i]?.group ?? 0, numGroups - 1),
+    })));
+  }, [numPlayers, numGroups, tournType]);
+
+  const setPlayerName = (i, val) => {
+    const clean = sanitize(val);
+    setPlayerData(prev => prev.map((p, j) => j === i ? { ...p, name: clean } : p));
+  };
+  const setPlayerGroup = (i, val) => {
+    setPlayerData(prev => prev.map((p, j) => j === i ? { ...p, group: parseInt(val) } : p));
+  };
 
   const handleCreate = () => {
-    if (!name.trim()) return;
-    const numGroups = numPlayers <= 8 ? 2 : numPlayers <= 16 ? 4 : numPlayers <= 24 ? 6 : 8;
-    const playersPerGroup = Math.ceil(numPlayers / numGroups);
-    const players = playerNames.slice(0, numPlayers).map((n, i) => ({
-      id: uid(), name: n || `Jugador ${i+1}`, group: Math.floor(i / playersPerGroup),
+    const cleanName = sanitize(name);
+    if (!cleanName) return;
+    const ng = tournType === "roundrobin" ? 1 : numGroups;
+    const players = playerData.slice(0, numPlayers).map((pd, i) => ({
+      id: uid(),
+      name: pd.name || `Jugador ${i+1}`,
+      group: tournType === "roundrobin" ? 0 : Math.min(pd.group, ng - 1),
     }));
-    onCreate({ id: uid(), name: name.trim(), createdAt: Date.now(), phase: "setup", players, matches: [], koMatches: [], numGroups });
-    setShowNew(false); setName(""); setNumPlayers(16);
+    onCreate({
+      id: uid(), name: cleanName, createdAt: Date.now(),
+      phase: "setup", tournType,
+      players, matches: [], koMatches: [], numGroups: ng,
+    });
+    setShowNew(false); setName(""); setNumPlayers(8); setNumGroups(2);
+    setPlayerData(Array.from({length:8}, (_, i) => ({ name: `Jugador ${i+1}`, group: 0 })));
   };
 
   const statusLabel = (t) => {
     if (t.phase === "setup") return { label: "Sin iniciar", color: C.muted };
+    if (t.phase === "roundrobin") {
+      const allDone = t.matches?.every(m => m.result);
+      return allDone ? { label: "Finalizado 🏆", color: C.accent } : { label: "Todos contra todos", color: C.tealMd };
+    }
     if (t.phase === "groups") return { label: "Fase de grupos", color: C.tealMd };
     if (t.phase === "knockout") {
       const champ = t.koMatches?.find(m=>m.phase==="final")?.result?.winner;
@@ -465,6 +563,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete }) {
   return (
     <div style={{ minHeight:"100vh", background:C.bg, fontFamily:FONT_BODY }}>
       <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+      <Watermark/>
 
       {/* Hero header */}
       <header style={{ background:C.teal, padding:"40px 24px 36px" }}>
@@ -484,13 +583,19 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete }) {
       <main style={{ maxWidth:860, margin:"0 auto", padding:"32px 24px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24 }}>
           <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:20 }}>Torneos activos</h2>
-          <button onClick={() => setShowNew(true)} style={{
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+            <span style={{ fontSize:12, color:C.muted }}>{userEmail}</span>
+            <button onClick={onLogout} style={{ padding:"8px 14px", background:"transparent", border:`1px solid ${C.border}`, borderRadius:9, color:C.muted, cursor:"pointer", fontSize:13 }}>
+              Salir
+            </button>
+            <button onClick={() => setShowNew(true)} style={{
             padding:"10px 20px", background:C.teal, border:"none", borderRadius:10,
             color:C.white, fontWeight:700, cursor:"pointer", fontSize:14,
             boxShadow:`0 4px 14px ${C.shadow}`, display:"flex", alignItems:"center", gap:6
           }}>
             + Nuevo torneo
           </button>
+          </div>
         </div>
 
         {tournaments.length === 0 && (
@@ -522,7 +627,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete }) {
                 </div>
                 <h3 style={{ margin:"0 0 6px", fontFamily:FONT_DISPLAY, color:C.teal, fontSize:17 }}>{t.name}</h3>
                 <p style={{ margin:"0 0 14px", color:C.muted, fontSize:12 }}>
-                  {t.players?.length} jugadores · {t.numGroups} grupos
+                  {t.players?.length} jugadores · {t.tournType === "roundrobin" ? "Todos contra todos" : `${t.numGroups} grupos`}
                 </p>
                 {champName && (
                   <div style={{ fontSize:12, color:C.accent, fontWeight:700, marginBottom:10 }}>🏆 {champName}</div>
@@ -549,28 +654,79 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete }) {
             </div>
 
             <label style={{ display:"block", marginBottom:6, fontSize:13, color:C.teal, fontWeight:600 }}>Nombre del torneo</label>
-            <input value={name} onChange={e=>setName(e.target.value)} placeholder="Ej. Copa Santa Cruz 2025"
+            <input value={name} onChange={e=>setName(sanitize(e.target.value))} placeholder="Ej. Copa Santa Cruz 2025"
+              maxLength={80}
               style={{ width:"100%", padding:"10px 14px", borderRadius:9, border:`1.5px solid ${C.border}`, fontSize:14, color:C.text, marginBottom:20, boxSizing:"border-box", outline:"none" }}/>
 
-            <label style={{ display:"block", marginBottom:10, fontSize:13, color:C.teal, fontWeight:600 }}>Cantidad de jugadores</label>
-            <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:24 }}>
-              {[8,12,16,20,24,32].map(n => (
+            {/* Tipo de torneo */}
+            <label style={{ display:"block", marginBottom:10, fontSize:13, color:C.teal, fontWeight:600 }}>Formato</label>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
+              {[
+                { val:"groups", label:"Por grupos", desc:"Fase de grupos + eliminatorias" },
+                { val:"roundrobin", label:"Todos contra todos", desc:"Un solo grupo, gana el mejor" },
+              ].map(opt => (
+                <div key={opt.val} onClick={() => setTournType(opt.val)} style={{
+                  padding:"12px 14px", borderRadius:10, border:`1.5px solid ${tournType===opt.val ? C.teal : C.border}`,
+                  background: tournType===opt.val ? C.tealLt : C.bg, cursor:"pointer",
+                }}>
+                  <p style={{ margin:0, fontWeight:700, color: tournType===opt.val ? C.teal : C.text, fontSize:13 }}>{opt.label}</p>
+                  <p style={{ margin:"3px 0 0", fontSize:11, color:C.muted }}>{opt.desc}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Cantidad de jugadores */}
+            <label style={{ display:"block", marginBottom:8, fontSize:13, color:C.teal, fontWeight:600 }}>Cantidad de jugadores</label>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:20 }}>
+              {[4,6,8,10,12,16,20,24,32].map(n => (
                 <button key={n} onClick={()=>setNumPlayers(n)} style={{
-                  padding:"7px 16px", borderRadius:8, border:`1.5px solid ${numPlayers===n ? C.teal : C.border}`,
+                  padding:"6px 14px", borderRadius:8, border:`1.5px solid ${numPlayers===n ? C.teal : C.border}`,
                   background: numPlayers===n ? C.tealLt : C.bg, color: numPlayers===n ? C.teal : C.muted,
-                  cursor:"pointer", fontWeight: numPlayers===n ? 700 : 400, fontSize:14
+                  cursor:"pointer", fontWeight: numPlayers===n ? 700 : 400, fontSize:13
                 }}>{n}</button>
               ))}
             </div>
 
-            <label style={{ display:"block", marginBottom:10, fontSize:13, color:C.teal, fontWeight:600 }}>Nombres de los jugadores</label>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:28 }}>
+            {/* Cantidad de grupos — solo si es por grupos */}
+            {tournType === "groups" && (
+              <>
+                <label style={{ display:"block", marginBottom:8, fontSize:13, color:C.teal, fontWeight:600 }}>Cantidad de grupos</label>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:20 }}>
+                  {[2,3,4,5,6,8].filter(g => g <= numPlayers).map(g => (
+                    <button key={g} onClick={()=>setNumGroups(g)} style={{
+                      padding:"6px 14px", borderRadius:8, border:`1.5px solid ${numGroups===g ? C.teal : C.border}`,
+                      background: numGroups===g ? C.tealLt : C.bg, color: numGroups===g ? C.teal : C.muted,
+                      cursor:"pointer", fontWeight: numGroups===g ? 700 : 400, fontSize:13
+                    }}>Grupo {g}</button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* Jugadores */}
+            <label style={{ display:"block", marginBottom:8, fontSize:13, color:C.teal, fontWeight:600 }}>Jugadores</label>
+            <div style={{ display:"grid", gridTemplateColumns: tournType==="groups" ? "1fr 1fr" : "1fr 1fr", gap:8, marginBottom:24 }}>
               {Array.from({length:numPlayers}, (_,i) => (
-                <div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", background:C.bg, borderRadius:8, border:`1px solid ${C.border}` }}>
-                  <span style={{ color:C.mutedLt, fontSize:11, minWidth:18 }}>{i+1}</span>
-                  <input value={playerNames[i]||""} onChange={e=>setPlayerNames(prev=>prev.map((x,j)=>j===i?e.target.value:x))}
-                    style={{ flex:1, background:"none", border:"none", outline:"none", color:C.text, fontSize:13 }}
-                    placeholder={`Jugador ${i+1}`}/>
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 10px", background:C.bg, borderRadius:8, border:`1px solid ${C.border}` }}>
+                  <span style={{ color:C.mutedLt, fontSize:11, minWidth:16 }}>{i+1}</span>
+                  <input
+                    value={playerData[i]?.name || ""}
+                    onChange={e => setPlayerName(i, e.target.value)}
+                    maxLength={50}
+                    style={{ flex:1, background:"none", border:"none", outline:"none", color:C.text, fontSize:12 }}
+                    placeholder={`Jugador ${i+1}`}
+                  />
+                  {tournType === "groups" && (
+                    <select
+                      value={playerData[i]?.group ?? 0}
+                      onChange={e => setPlayerGroup(i, e.target.value)}
+                      style={{ background:C.tealLt, border:`1px solid ${C.teal}33`, borderRadius:6, color:C.teal, fontSize:11, fontWeight:600, padding:"2px 4px", cursor:"pointer", outline:"none" }}
+                    >
+                      {Array.from({length:numGroups}, (_, g) => (
+                        <option key={g} value={g}>G{g+1}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               ))}
             </div>
@@ -585,6 +741,102 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── ROUND ROBIN VIEW ────────────────────────────────────────────────────────
+function RoundRobinView({ tournament, onUpdate }) {
+  const { players, matches } = tournament;
+  const [modal, setModal] = useState(null);
+
+  const handleScore = (matchId, result) => {
+    const newMatches = matches.map(m => m.id === matchId ? { ...m, result } : m);
+    const allDone = newMatches.every(m => m.result);
+    onUpdate({ ...tournament, matches: newMatches, phase: allDone ? "roundrobin" : "roundrobin" });
+    setModal(null);
+  };
+
+  // Full stats with H2H tiebreak
+  const stats = {};
+  players.forEach(p => { stats[p.id] = { ...p, wins:0, losses:0, setsWon:0, setsLost:0, ptsWon:0, ptsLost:0 }; });
+  matches.filter(m => m.result).forEach(m => {
+    const r = m.result;
+    if (r.walkover) { stats[r.winner].wins++; stats[r.loser].losses++; }
+    else {
+      stats[r.winner].wins++; stats[r.loser].losses++;
+      stats[m.p1].setsWon += r.p1Sets; stats[m.p1].setsLost += r.p2Sets;
+      stats[m.p2].setsWon += r.p2Sets; stats[m.p2].setsLost += r.p1Sets;
+      stats[m.p1].ptsWon  += r.p1Pts;  stats[m.p1].ptsLost  += r.p2Pts;
+      stats[m.p2].ptsWon  += r.p2Pts;  stats[m.p2].ptsLost  += r.p1Pts;
+    }
+  });
+
+  const sorted = sortGroup(players, stats, matches);
+  const allDone = matches.every(m => m.result);
+  const played = matches.filter(m => m.result).length;
+
+  return (
+    <div>
+      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Todos contra todos</h2>
+          <p style={{ margin:"4px 0 0", color:C.muted, fontSize:12 }}>{played} de {matches.length} partidos jugados</p>
+        </div>
+        {allDone && <span style={{ fontSize:12, color:C.win, background:C.winBg, padding:"6px 14px", borderRadius:20, fontWeight:700 }}>✓ Torneo completado</span>}
+      </div>
+
+      {/* Standings table */}
+      <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 10px ${C.shadow}`, marginBottom:24 }}>
+        <div style={{ padding:"10px 16px", background:C.teal }}>
+          <span style={{ color:C.white, fontWeight:700, fontFamily:FONT_DISPLAY, fontSize:14 }}>Tabla de posiciones</span>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"32px 1fr 36px 36px 36px 60px 70px", padding:"8px 16px", fontSize:10, color:C.mutedLt, fontWeight:700, letterSpacing:.5, borderBottom:`1px solid ${C.border}`, gap:4 }}>
+          <span>#</span><span>JUGADOR</span><span style={{textAlign:"center"}}>PJ</span><span style={{textAlign:"center"}}>G</span><span style={{textAlign:"center"}}>P</span><span style={{textAlign:"center"}}>SETS</span><span style={{textAlign:"center"}}>PUNTOS</span>
+        </div>
+        {sorted.map((p, rank) => (
+          <div key={p.id} style={{ display:"grid", gridTemplateColumns:"32px 1fr 36px 36px 36px 60px 70px", padding:"10px 16px", gap:4, alignItems:"center", background: rank===0 ? C.tealXlt : rank%2===0 ? C.bg : C.white, borderBottom:`1px solid ${C.border}33`, borderLeft:`3px solid ${rank===0?C.teal:"transparent"}` }}>
+            <span style={{ fontWeight:700, color: rank===0?C.teal:rank===1?"#9e9e9e":rank===2?"#a0714f":C.mutedLt, fontSize:rank<3?16:13, textAlign:"center" }}>
+              {rank===0?"🥇":rank===1?"🥈":rank===2?"🥉":rank+1}
+            </span>
+            <span style={{ fontSize:13, color:C.text, fontWeight: rank<3?700:400 }}>{p.name}</span>
+            <span style={{ textAlign:"center", fontSize:12, color:C.muted }}>{p.wins+p.losses}</span>
+            <span style={{ textAlign:"center", fontSize:12, color:C.win, fontWeight:600 }}>{p.wins}</span>
+            <span style={{ textAlign:"center", fontSize:12, color:C.lose }}>{p.losses}</span>
+            <span style={{ textAlign:"center", fontSize:12, color:C.muted }}>{p.setsWon}-{p.setsLost}</span>
+            <span style={{ textAlign:"center", fontSize:12, color:C.muted }}>{p.ptsWon}-{p.ptsLost}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* All matches */}
+      <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 10px ${C.shadow}` }}>
+        <div style={{ padding:"10px 16px", background:C.teal }}>
+          <span style={{ color:C.white, fontWeight:700, fontFamily:FONT_DISPLAY, fontSize:14 }}>Partidos</span>
+        </div>
+        <div style={{ padding:"10px 14px" }}>
+          {matches.map(m => {
+            const pp1 = players.find(p=>p.id===m.p1), pp2 = players.find(p=>p.id===m.p2);
+            const r = m.result;
+            return (
+              <div key={m.id} onClick={()=>setModal(m)} style={{
+                display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:6,
+                padding:"9px 10px", borderRadius:8, marginBottom:6, cursor:"pointer",
+                background: r ? C.tealXlt : C.bg, border:`1px solid ${r ? C.teal+"22" : C.border}`,
+                transition:"all .15s",
+              }}>
+                <span style={{ fontSize:13, color: r?.winner===m.p1?C.teal:C.muted, fontWeight: r?.winner===m.p1?700:400 }}>{pp1?.name}</span>
+                <span style={{ fontSize:13, color:C.teal, fontWeight:700, minWidth:50, textAlign:"center" }}>
+                  {r ? (r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`) : "vs"}
+                </span>
+                <span style={{ fontSize:13, color: r?.winner===m.p2?C.teal:C.muted, fontWeight: r?.winner===m.p2?700:400, textAlign:"right" }}>{pp2?.name}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1220,9 +1472,11 @@ function SetupView({ tournament, onUpdate }) {
 }
 
 // ─── TOURNAMENT DETAIL ────────────────────────────────────────────────────────
-function TournamentDetail({ tournament, onUpdate, onBack }) {
+function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail }) {
   const tabs = tournament.phase === "setup"
     ? [{ id:"setup", label:"Grupos" }]
+    : tournament.phase === "roundrobin"
+    ? [{ id:"roundrobin", label:"Partidos" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }]
     : tournament.phase === "groups"
     ? [{ id:"groups", label:"Grupos" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }]
     : [{ id:"bracket", label:"Bracket" }, { id:"ranking", label:"Ranking" }, { id:"history", label:"Historial" }];
@@ -1235,13 +1489,22 @@ function TournamentDetail({ tournament, onUpdate, onBack }) {
   return (
     <div style={{ minHeight:"100vh", background:C.bg, fontFamily:FONT_BODY }}>
       <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+      <Watermark/>
 
       {/* Header */}
       <header style={{ background:C.teal, padding:"20px 24px 0" }}>
         <div style={{ maxWidth:900, margin:"0 auto" }}>
-          <button onClick={onBack} style={{ background:"none", border:"none", color:"rgba(255,255,255,0.6)", cursor:"pointer", fontSize:13, marginBottom:12, padding:0, display:"flex", alignItems:"center", gap:6 }}>
-            ← Volver a torneos
-          </button>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+            <button onClick={onBack} style={{ background:"none", border:"none", color:"rgba(255,255,255,0.6)", cursor:"pointer", fontSize:13, padding:0, display:"flex", alignItems:"center", gap:6 }}>
+              ← Volver a torneos
+            </button>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:12, color:"rgba(255,255,255,0.5)" }}>{userEmail}</span>
+              <button onClick={onLogout} style={{ background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", borderRadius:8, color:"rgba(255,255,255,0.7)", cursor:"pointer", fontSize:12, padding:"5px 12px" }}>
+                Salir
+              </button>
+            </div>
+          </div>
           <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:16 }}>
             <Logo size={44}/>
             <div>
@@ -1262,24 +1525,122 @@ function TournamentDetail({ tournament, onUpdate, onBack }) {
       </header>
 
       <main style={{ maxWidth:900, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="setup"   && <SetupView    tournament={tournament} onUpdate={onUpdate}/>}
-        {tab==="groups"  && <GroupPhaseView tournament={tournament} onUpdate={onUpdate}/>}
-        {tab==="bracket" && <KnockoutView  tournament={tournament} onUpdate={onUpdate}/>}
-        {tab==="ranking" && <RankingView   tournament={tournament}/>}
-        {tab==="history" && <HistoryView   tournament={tournament}/>}
+        {tab==="setup"      && <SetupView       tournament={tournament} onUpdate={onUpdate}/>}
+        {tab==="groups"     && <GroupPhaseView  tournament={tournament} onUpdate={onUpdate}/>}
+        {tab==="roundrobin" && <RoundRobinView  tournament={tournament} onUpdate={onUpdate}/>}
+        {tab==="bracket"    && <KnockoutView    tournament={tournament} onUpdate={onUpdate}/>}
+        {tab==="ranking"    && <RankingView     tournament={tournament}/>}
+        {tab==="history"    && <HistoryView     tournament={tournament}/>}
       </main>
+    </div>
+  );
+}
+
+
+
+// ─── WATERMARK ────────────────────────────────────────────────────────────────
+function Watermark() {
+  return (
+    <div style={{
+      position:"fixed", bottom:14, right:16, zIndex:999,
+      pointerEvents:"none", userSelect:"none",
+      display:"flex", alignItems:"center", gap:6,
+      opacity:0.35,
+    }}>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="7" stroke={C.teal} strokeWidth="1.5"/>
+        <text x="8" y="11.5" textAnchor="middle" fill={C.teal} fontSize="8" fontWeight="700" fontFamily="serif">M</text>
+      </svg>
+      <span style={{ fontSize:11, color:C.teal, fontFamily:FONT_DISPLAY, fontWeight:600, letterSpacing:.5 }}>
+        Melissa Berdeja
+      </span>
+    </div>
+  );
+}
+
+// ─── LOGIN SCREEN ─────────────────────────────────────────────────────────────
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!email || !password) return;
+    setLoading(true);
+    setError("");
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (e) {
+      setError("Email o contraseña incorrectos");
+      setLoading(false);
+    }
+  };
+
+  const handleKey = (e) => { if (e.key === "Enter") handleLogin(); };
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.teal, display:"flex", alignItems:"center", justifyContent:"center", padding:24, fontFamily:FONT_BODY }}>
+      <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+      <div style={{ background:C.white, borderRadius:20, padding:40, width:"100%", maxWidth:380, boxShadow:`0 24px 64px rgba(0,0,0,0.25)` }}>
+        <div style={{ textAlign:"center", marginBottom:28 }}>
+          <Logo size={64}/>
+          <h1 style={{ margin:"16px 0 4px", fontFamily:FONT_DISPLAY, color:C.teal, fontSize:22, fontWeight:800 }}>Tenis de Mesa</h1>
+          <p style={{ margin:0, color:C.muted, fontSize:13 }}>Asociación Departamental · Santa Cruz</p>
+        </div>
+
+        <label style={{ display:"block", fontSize:13, color:C.teal, fontWeight:600, marginBottom:6 }}>Email</label>
+        <input
+          type="email" value={email}
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder="tu@email.com"
+          style={{ width:"100%", padding:"11px 14px", borderRadius:9, border:`1.5px solid ${C.border}`, fontSize:14, color:C.text, marginBottom:16, boxSizing:"border-box", outline:"none" }}
+        />
+
+        <label style={{ display:"block", fontSize:13, color:C.teal, fontWeight:600, marginBottom:6 }}>Contraseña</label>
+        <input
+          type="password" value={password}
+          onChange={e => setPassword(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder="••••••••"
+          style={{ width:"100%", padding:"11px 14px", borderRadius:9, border:`1.5px solid ${C.border}`, fontSize:14, color:C.text, marginBottom: error ? 10 : 20, boxSizing:"border-box", outline:"none" }}
+        />
+
+        {error && (
+          <p style={{ color:C.lose, fontSize:13, margin:"0 0 16px", textAlign:"center" }}>⚠️ {error}</p>
+        )}
+
+        <button onClick={handleLogin} disabled={loading || !email || !password} style={{
+          width:"100%", padding:"13px", background: email && password ? C.teal : C.border,
+          border:"none", borderRadius:10, color: email && password ? C.white : C.muted,
+          fontWeight:700, fontSize:15, cursor: email && password ? "pointer" : "not-allowed",
+          fontFamily:FONT_DISPLAY
+        }}>
+          {loading ? "Ingresando..." : "Ingresar →"}
+        </button>
+      </div>
     </div>
   );
 }
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [user, setUser] = useState(undefined); // undefined = cargando, null = no logueado
   const [tournaments, setTournaments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
 
-  // Listener en tiempo real — todos los dispositivos se sincronizan automáticamente
+  // Auth state listener
   useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u ?? null));
+    return () => unsub();
+  }, []);
+
+  // Firestore listener — solo cuando está logueado
+  useEffect(() => {
+    if (!user) { setLoading(false); return; }
+    setLoading(true);
     const unsub = onSnapshot(collection(db, "tournaments"), (snap) => {
       const data = snap.docs
         .map(d => ({ ...d.data(), id: d.id }))
@@ -1291,7 +1652,7 @@ export default function App() {
       setLoading(false);
     });
     return () => unsub();
-  }, []);
+  }, [user]);
 
   const handleCreate = async (t) => {
     await setDoc(doc(db, "tournaments", t.id), { ...t, createdAt: Date.now() });
@@ -1309,8 +1670,25 @@ export default function App() {
     }
   };
 
-  const open = openId ? tournaments.find(t => t.id === openId) : null;
+  const handleLogout = async () => {
+    await signOut(auth);
+    setOpenId(null);
+    setTournaments([]);
+  };
 
+  // Pantalla de carga inicial (verificando auth)
+  if (user === undefined) return (
+    <div style={{ minHeight:"100vh", background:C.teal, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16, fontFamily:"Inter, sans-serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
+      <Logo size={56}/>
+      <p style={{ color:"rgba(255,255,255,0.7)", fontSize:14 }}>Cargando...</p>
+    </div>
+  );
+
+  // No logueado → mostrar login
+  if (!user) return <LoginScreen />;
+
+  // Cargando torneos
   if (loading) return (
     <div style={{ minHeight:"100vh", background:"#f5f7f6", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16, fontFamily:"Inter, sans-serif" }}>
       <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
@@ -1319,11 +1697,15 @@ export default function App() {
     </div>
   );
 
+  const open = openId ? tournaments.find(t => t.id === openId) : null;
+
   if (open) {
     return <TournamentDetail
       tournament={open}
       onUpdate={handleUpdate}
       onBack={() => setOpenId(null)}
+      onLogout={handleLogout}
+      userEmail={user.email}
     />;
   }
 
@@ -1332,5 +1714,7 @@ export default function App() {
     onCreate={handleCreate}
     onOpen={setOpenId}
     onDelete={handleDelete}
+    onLogout={handleLogout}
+    userEmail={user.email}
   />;
 }
