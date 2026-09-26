@@ -369,7 +369,7 @@ function ScoreModal({ match, players, onSave, onClose }) {
   const [sets, setSets] = useState(
     match.result?.rawSets || Array.from({ length: 7 }, () => ({ p1: "", p2: "" }))
   );
-  const [activeWO, setActiveWO] = useState(null); // walkover: p1id | p2id
+  const [activeWO, setActiveWO] = useState(null); // walkover: p1id | p2id | "double"
   const [arbitroName, setArbitroName] = useState(match.result?.arbitro || "");
 
   // Compute current score
@@ -384,16 +384,20 @@ function ScoreModal({ match, players, onSave, onClose }) {
   const winner = p1Sets === 3 ? match.p1 : p2Sets === 3 ? match.p2 : null;
 
   const handleSave = () => {
-    if (activeWO) {
+    const arb = sanitize(arbitroName);
+    if (activeWO === "double") {
+      // Doble walkover — no hay ganador
+      onSave({ winner: null, loser: null, walkover: true, doubleWO: true, p1Sets: 0, p2Sets: 0, p1Pts: 0, p2Pts: 0, rawSets: [], arbitro: arb });
+    } else if (activeWO) {
       const loser = activeWO === match.p1 ? match.p2 : match.p1;
-      onSave({ winner: activeWO, loser, walkover: true, p1Sets: 0, p2Sets: 0, p1Pts: 0, p2Pts: 0, rawSets: [], arbitro: sanitize(arbitroName) });
+      onSave({ winner: activeWO, loser, walkover: true, doubleWO: false, p1Sets: 0, p2Sets: 0, p1Pts: 0, p2Pts: 0, rawSets: [], arbitro: arb });
     } else if (winner) {
       const loser = winner === match.p1 ? match.p2 : match.p1;
-      onSave({ winner, loser, p1Sets, p2Sets, p1Pts, p2Pts, rawSets: sets, arbitro: sanitize(arbitroName) });
+      onSave({ winner, loser, p1Sets, p2Sets, p1Pts, p2Pts, rawSets: sets, arbitro: arb });
     }
   };
 
-  const canSave = (!!activeWO || !!winner) && arbitroName.trim().length >= 2;
+  const canSave = (!!activeWO || !!winner) && arbitroName.trim().length >= 2; // double WO: activeWO==='double'
 
   // Which sets are still editable (stop after one player reaches 3)
   const activeSets = sets.map((s, i) => {
@@ -427,7 +431,7 @@ function ScoreModal({ match, players, onSave, onClose }) {
         {/* Walkover */}
         <div style={{ marginBottom:20 }}>
           <p style={{ margin:"0 0 8px", fontSize:12, color:C.muted, fontWeight:600, letterSpacing:.5 }}>WALK OVER (ausencia)</p>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
             {[match.p1, match.p2].map(pid => {
               const pl = players.find(p => p.id === pid);
               const active = activeWO === pid;
@@ -442,6 +446,16 @@ function ScoreModal({ match, players, onSave, onClose }) {
               );
             })}
           </div>
+          {/* Doble WO */}
+          <button onClick={() => setActiveWO(activeWO === "double" ? null : "double")} style={{
+            width:"100%", padding:"9px 12px", borderRadius:8,
+            border:`1.5px solid ${activeWO === "double" ? C.lose : C.border}`,
+            background: activeWO === "double" ? C.loseBg : C.bg,
+            color: activeWO === "double" ? C.lose : C.muted,
+            cursor:"pointer", fontSize:13, fontWeight: activeWO === "double" ? 700 : 400, transition:"all .15s"
+          }}>
+            ⚠️ Doble WO — ninguno se presentó
+          </button>
         </div>
 
         {!activeWO && (
@@ -845,7 +859,7 @@ function RoundRobinView({ tournament, onUpdate, isAdmin, canEdit }) {
               }}>
                 <span style={{ fontSize:13, color: r?.winner===m.p1?C.teal:C.muted, fontWeight: r?.winner===m.p1?700:400 }}>{pp1?.name}</span>
                 <span style={{ fontSize:13, color:C.teal, fontWeight:700, minWidth:50, textAlign:"center" }}>
-                  {r ? (r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`) : "vs"}
+                  {r ? (r.doubleWO ? "WO/WO" : r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`) : "vs"}
                 </span>
                 <span style={{ fontSize:13, color: r?.winner===m.p2?C.teal:C.muted, fontWeight: r?.winner===m.p2?700:400, textAlign:"right" }}>{pp2?.name}</span>
               </div>
@@ -938,7 +952,7 @@ function GroupPhaseView({ tournament, onUpdate, isAdmin, canEdit }) {
                     }}>
                       <span style={{ fontSize:12, color: r?.winner===m.p1 ? C.teal : C.muted, fontWeight: r?.winner===m.p1 ? 700 : 400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{pp1?.name}</span>
                       <span style={{ fontSize:12, color:C.teal, fontWeight:700, minWidth:44, textAlign:"center" }}>
-                        {r ? (r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`) : "vs"}
+                        {r ? (r.doubleWO ? "WO/WO" : r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`) : "vs"}
                       </span>
                       <span style={{ fontSize:12, color: r?.winner===m.p2 ? C.teal : C.muted, fontWeight: r?.winner===m.p2 ? 700 : 400, textAlign:"right", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{pp2?.name}</span>
                     </div>
@@ -976,7 +990,7 @@ function BracketCard({ match, players, onClick }) {
           <span style={{ fontSize:13, color: row.win ? C.teal : row.pl ? C.text : C.mutedLt, fontWeight: row.win ? 700 : 400 }}>
             {row.pl?.name || (match?.p1||match?.p2 ? "Por definir" : "–")}
           </span>
-          {r && <span style={{ fontWeight:700, color: row.win ? C.teal : C.muted, fontSize:15 }}>{r.walkover ? (row.win?"W":"–") : row.score}</span>}
+          {r && <span style={{ fontWeight:700, color: row.win ? C.teal : C.muted, fontSize:15 }}>{r.doubleWO ? "WO" : r.walkover ? (row.win?"W":"–") : row.score}</span>}
         </div>
       ))}
     </div>
@@ -1418,13 +1432,13 @@ function HistoryView({ tournament }) {
               </span>
               <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                 {r.arbitro && <span style={{ fontSize:11, color:C.tealMd }}>🧑‍⚖️ {r.arbitro}</span>}
-                {r.walkover && <span style={{ fontSize:11, color:C.lose, fontWeight:700, background:C.loseBg, padding:"2px 8px", borderRadius:10 }}>WALK OVER</span>}
+                {r.walkover && <span style={{ fontSize:11, color:C.lose, fontWeight:700, background:C.loseBg, padding:"2px 8px", borderRadius:10 }}>{r.doubleWO ? "DOBLE WO" : "WALK OVER"}</span>}
               </div>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:8 }}>
               <span style={{ color: r.winner===m.p1 ? C.teal : C.muted, fontWeight: r.winner===m.p1 ? 700 : 400, fontSize:14 }}>{p1?.name}</span>
               <span style={{ color:C.teal, fontWeight:800, fontSize:22, minWidth:52, textAlign:"center" }}>
-                {r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`}
+                {r.doubleWO ? "WO/WO" : r.walkover ? "W/O" : `${r.p1Sets}–${r.p2Sets}`}
               </span>
               <span style={{ color: r.winner===m.p2 ? C.teal : C.muted, fontWeight: r.winner===m.p2 ? 700 : 400, fontSize:14, textAlign:"right" }}>{p2?.name}</span>
             </div>
@@ -1729,28 +1743,29 @@ function UserManagement({ onClose }) {
 function Watermark() {
   return (
     <div style={{
-      position:"fixed", bottom:18, right:18, zIndex:999,
+      position:"fixed", bottom:20, right:20, zIndex:999,
       pointerEvents:"none", userSelect:"none",
-      display:"flex", alignItems:"center", gap:8,
-      opacity:0.55,
-      background:"rgba(255,255,255,0.85)",
-      backdropFilter:"blur(6px)",
-      borderRadius:20,
-      padding:"5px 12px 5px 8px",
-      boxShadow:"0 2px 10px rgba(29,92,92,0.12)",
-      border:`1px solid ${C.border}`,
+      display:"flex", alignItems:"center", gap:10,
+      opacity:0.75,
+      background:"rgba(255,255,255,0.92)",
+      backdropFilter:"blur(8px)",
+      borderRadius:24,
+      padding:"7px 16px 7px 10px",
+      boxShadow:"0 4px 16px rgba(29,92,92,0.18)",
+      border:`1.5px solid ${C.borderMd}`,
     }}>
       {/* MBB monogram */}
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-        <circle cx="11" cy="11" r="10" fill={C.teal}/>
-        <text x="11" y="15" textAnchor="middle" fill="white" fontSize="9" fontWeight="800"
+      <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+        <circle cx="15" cy="15" r="14" fill={C.teal}/>
+        <circle cx="15" cy="15" r="12" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1"/>
+        <text x="15" y="19.5" textAnchor="middle" fill="white" fontSize="11" fontWeight="800"
           fontFamily="'Space Grotesk', sans-serif" letterSpacing="-0.5">MBB</text>
       </svg>
       <div>
-        <div style={{ fontSize:10, color:C.teal, fontFamily:FONT_DISPLAY, fontWeight:800, lineHeight:1.2, letterSpacing:.3 }}>
+        <div style={{ fontSize:12, color:C.teal, fontFamily:FONT_DISPLAY, fontWeight:800, lineHeight:1.3, letterSpacing:.3 }}>
           Melissa Berdeja
         </div>
-        <div style={{ fontSize:8.5, color:C.muted, fontFamily:FONT_BODY, lineHeight:1.2, letterSpacing:.2 }}>
+        <div style={{ fontSize:10, color:C.muted, fontFamily:FONT_BODY, lineHeight:1.3, letterSpacing:.2 }}>
           Dev &amp; Design
         </div>
       </div>
