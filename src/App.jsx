@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { db } from "./firebase";
 import {
   collection, doc, onSnapshot,
-  setDoc, deleteDoc, serverTimestamp
+  setDoc, deleteDoc, getDoc, serverTimestamp
 } from "firebase/firestore";
 import {
   getAuth, signInWithEmailAndPassword,
@@ -370,6 +370,7 @@ function ScoreModal({ match, players, onSave, onClose }) {
     match.result?.rawSets || Array.from({ length: 7 }, () => ({ p1: "", p2: "" }))
   );
   const [activeWO, setActiveWO] = useState(null); // walkover: p1id | p2id
+  const [arbitroName, setArbitroName] = useState(match.result?.arbitro || "");
 
   // Compute current score
   let p1Sets = 0, p2Sets = 0, p1Pts = 0, p2Pts = 0;
@@ -385,14 +386,14 @@ function ScoreModal({ match, players, onSave, onClose }) {
   const handleSave = () => {
     if (activeWO) {
       const loser = activeWO === match.p1 ? match.p2 : match.p1;
-      onSave({ winner: activeWO, loser, walkover: true, p1Sets: 0, p2Sets: 0, p1Pts: 0, p2Pts: 0, rawSets: [] });
+      onSave({ winner: activeWO, loser, walkover: true, p1Sets: 0, p2Sets: 0, p1Pts: 0, p2Pts: 0, rawSets: [], arbitro: sanitize(arbitroName) });
     } else if (winner) {
       const loser = winner === match.p1 ? match.p2 : match.p1;
-      onSave({ winner, loser, p1Sets, p2Sets, p1Pts, p2Pts, rawSets: sets });
+      onSave({ winner, loser, p1Sets, p2Sets, p1Pts, p2Pts, rawSets: sets, arbitro: sanitize(arbitroName) });
     }
   };
 
-  const canSave = !!activeWO || !!winner;
+  const canSave = (!!activeWO || !!winner) && arbitroName.trim().length >= 2;
 
   // Which sets are still editable (stop after one player reaches 3)
   const activeSets = sets.map((s, i) => {
@@ -501,8 +502,9 @@ function ScoreModal({ match, players, onSave, onClose }) {
 }
 
 // ─── TOURNAMENT HOME (list) ────────────────────────────────────────────────────
-function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, userEmail }) {
+function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, userEmail, isAdmin, canEdit, userRole }) {
   const [showNew, setShowNew] = useState(false);
+  const [showUserMgmt, setShowUserMgmt] = useState(false);
   const [name, setName] = useState("");
   const [tournType, setTournType] = useState("groups"); // "groups" | "roundrobin"
   const [numPlayers, setNumPlayers] = useState(8);
@@ -564,6 +566,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
     <div style={{ minHeight:"100vh", background:C.bg, fontFamily:FONT_BODY }}>
       <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
       <Watermark/>
+      {showUserMgmt && <UserManagement onClose={() => setShowUserMgmt(false)}/>}
 
       {/* Hero header */}
       <header style={{ background:C.teal, padding:"40px 24px 36px" }}>
@@ -583,18 +586,31 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
       <main style={{ maxWidth:860, margin:"0 auto", padding:"32px 24px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24 }}>
           <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:20 }}>Torneos activos</h2>
-          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+          <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
             <span style={{ fontSize:12, color:C.muted }}>{userEmail}</span>
+            <span style={{ fontSize:11,
+              color: userRole==="admin"?C.teal : userRole==="arbitro"?C.accent : C.muted,
+              background: userRole==="admin"?C.tealLt : userRole==="arbitro"?C.accent+"18" : C.border,
+              padding:"3px 9px", borderRadius:20, fontWeight:700 }}>
+              {userRole==="admin" ? "Admin" : userRole==="arbitro" ? "Árbitro" : "Lector"}
+            </span>
+            {isAdmin && (
+              <button onClick={() => setShowUserMgmt(true)} style={{ padding:"8px 14px", background:"transparent", border:`1px solid ${C.border}`, borderRadius:9, color:C.muted, cursor:"pointer", fontSize:13 }}>
+                👥 Usuarios
+              </button>
+            )}
             <button onClick={onLogout} style={{ padding:"8px 14px", background:"transparent", border:`1px solid ${C.border}`, borderRadius:9, color:C.muted, cursor:"pointer", fontSize:13 }}>
               Salir
             </button>
-            <button onClick={() => setShowNew(true)} style={{
-            padding:"10px 20px", background:C.teal, border:"none", borderRadius:10,
-            color:C.white, fontWeight:700, cursor:"pointer", fontSize:14,
-            boxShadow:`0 4px 14px ${C.shadow}`, display:"flex", alignItems:"center", gap:6
-          }}>
-            + Nuevo torneo
-          </button>
+            {isAdmin && (
+              <button onClick={() => setShowNew(true)} style={{
+                padding:"10px 20px", background:C.teal, border:"none", borderRadius:10,
+                color:C.white, fontWeight:700, cursor:"pointer", fontSize:14,
+                boxShadow:`0 4px 14px ${C.shadow}`, display:"flex", alignItems:"center", gap:6
+              }}>
+                + Nuevo torneo
+              </button>
+            )}
           </div>
         </div>
 
@@ -623,7 +639,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
                   <span style={{ fontSize:11, fontWeight:700, color:st.color, background:st.color+"18", padding:"3px 9px", borderRadius:20, letterSpacing:.5 }}>
                     {st.label}
                   </span>
-                  <button onClick={e=>{e.stopPropagation(); onDelete(t.id)}} style={{ background:"none", border:"none", color:C.mutedLt, cursor:"pointer", fontSize:16, lineHeight:1 }}>×</button>
+                  {isAdmin && <button onClick={e=>{e.stopPropagation(); onDelete(t.id)}} style={{ background:"none", border:"none", color:C.mutedLt, cursor:"pointer", fontSize:16, lineHeight:1 }}>×</button>}
                 </div>
                 <h3 style={{ margin:"0 0 6px", fontFamily:FONT_DISPLAY, color:C.teal, fontSize:17 }}>{t.name}</h3>
                 <p style={{ margin:"0 0 14px", color:C.muted, fontSize:12 }}>
@@ -746,7 +762,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
 }
 
 // ─── ROUND ROBIN VIEW ────────────────────────────────────────────────────────
-function RoundRobinView({ tournament, onUpdate }) {
+function RoundRobinView({ tournament, onUpdate, isAdmin, canEdit }) {
   const { players, matches } = tournament;
   const [modal, setModal] = useState(null);
 
@@ -821,7 +837,7 @@ function RoundRobinView({ tournament, onUpdate }) {
             const pp1 = players.find(p=>p.id===m.p1), pp2 = players.find(p=>p.id===m.p2);
             const r = m.result;
             return (
-              <div key={m.id} onClick={()=>setModal(m)} style={{
+              <div key={m.id} onClick={()=>canEdit && setModal(m)} style={{
                 display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:6,
                 padding:"9px 10px", borderRadius:8, marginBottom:6, cursor:"pointer",
                 background: r ? C.tealXlt : C.bg, border:`1px solid ${r ? C.teal+"22" : C.border}`,
@@ -842,7 +858,7 @@ function RoundRobinView({ tournament, onUpdate }) {
 }
 
 // ─── GROUP PHASE VIEW ─────────────────────────────────────────────────────────
-function GroupPhaseView({ tournament, onUpdate }) {
+function GroupPhaseView({ tournament, onUpdate, isAdmin, canEdit }) {
   const { players, matches, numGroups } = tournament;
   const [modal, setModal] = useState(null);
   const stats = computeGroupStats(players, matches);
@@ -914,7 +930,7 @@ function GroupPhaseView({ tournament, onUpdate }) {
                   const pp1 = players.find(p=>p.id===m.p1), pp2 = players.find(p=>p.id===m.p2);
                   const r = m.result;
                   return (
-                    <div key={m.id} onClick={()=>setModal(m)} style={{
+                    <div key={m.id} onClick={()=>canEdit && setModal(m)} style={{
                       display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:6,
                       padding:"8px 10px", borderRadius:8, marginBottom:4, cursor:"pointer",
                       background: r ? C.tealXlt : C.bg, border:`1px solid ${r ? C.teal+"22" : C.border}`,
@@ -1083,7 +1099,7 @@ function ManualDrawModal({ koMatches, players, onSave, onClose }) {
   );
 }
 
-function KnockoutView({ tournament, onUpdate }) {
+function KnockoutView({ tournament, onUpdate, isAdmin, canEdit }) {
   const { players, koMatches } = tournament;
   const [modal, setModal] = useState(null);
 
@@ -1166,7 +1182,7 @@ function KnockoutView({ tournament, onUpdate }) {
           <span style={{ fontSize:12, color:C.muted, background:C.bg, border:`1px solid ${C.border}`, borderRadius:9, padding:"8px 14px", display:"flex", alignItems:"center", gap:6 }}>
             ✓ Cruces definidos
           </span>
-        ) : (
+        ) : isAdmin ? (
           <div style={{ display:"flex", gap:8 }}>
             <button onClick={() => setShowManualDraw(true)} style={{ padding:"8px 16px", background:C.white, border:`1.5px solid ${C.teal}`, borderRadius:9, color:C.teal, cursor:"pointer", fontSize:13, fontWeight:600 }}>
               ✏️ Asignar manual
@@ -1175,7 +1191,7 @@ function KnockoutView({ tournament, onUpdate }) {
               🔀 Sortear cruces
             </button>
           </div>
-        )}
+        ) : null}
       </div>
 
       {champName && (
@@ -1346,23 +1362,64 @@ function RankingView({ tournament }) {
 // ─── HISTORY ──────────────────────────────────────────────────────────────────
 function HistoryView({ tournament }) {
   const { players, matches, koMatches } = tournament;
+  const [filterPlayer, setFilterPlayer] = useState(""); // player id or ""
   const allMatches = [...(matches||[]), ...(koMatches||[])].filter(m=>m.result).reverse();
-  const phaseLabel = { group:"Grupos", qf:"Cuartos", sf:"Semifinal", final:"Final", bronze:"3° Puesto" };
+  const phaseLabel = { group:"Grupos", qf:"Cuartos", sf:"Semifinal", final:"Final", bronze:"3° Puesto", roundrobin:"Todos contra todos" };
+
+  const filtered = filterPlayer
+    ? allMatches.filter(m => m.p1 === filterPlayer || m.p2 === filterPlayer)
+    : allMatches;
+
+  const selectedPlayer = players.find(p => p.id === filterPlayer);
 
   return (
     <div>
-      <h2 style={{ margin:"0 0 20px", fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Historial de partidos</h2>
-      {allMatches.length === 0 && <p style={{ color:C.muted, textAlign:"center", paddingTop:40 }}>Sin partidos jugados aún.</p>}
-      {allMatches.map(m => {
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:10 }}>
+        <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Historial de partidos</h2>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <select
+            value={filterPlayer}
+            onChange={e => setFilterPlayer(e.target.value)}
+            style={{ padding:"8px 12px", borderRadius:9, border:`1.5px solid ${filterPlayer ? C.teal : C.border}`, fontSize:13, color: filterPlayer ? C.teal : C.muted, fontWeight: filterPlayer ? 700 : 400, background:C.white, outline:"none", cursor:"pointer" }}
+          >
+            <option value="">Todos los jugadores</option>
+            {[...players].sort((a,b)=>a.name.localeCompare(b.name)).map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          {filterPlayer && (
+            <button onClick={() => setFilterPlayer("")} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:18, lineHeight:1 }}>×</button>
+          )}
+        </div>
+      </div>
+
+      {filterPlayer && (
+        <div style={{ background:C.tealXlt, borderRadius:10, padding:"10px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:13, color:C.teal, fontWeight:700 }}>🏓 {selectedPlayer?.name}</span>
+          <span style={{ fontSize:12, color:C.muted }}>{filtered.length} partido{filtered.length!==1?"s":""}</span>
+          <span style={{ fontSize:12, color:C.win }}>
+            {filtered.filter(m=>m.result.winner===filterPlayer).length}G
+          </span>
+          <span style={{ fontSize:12, color:C.lose }}>
+            {filtered.filter(m=>m.result.winner!==filterPlayer).length}P
+          </span>
+        </div>
+      )}
+
+      {filtered.length === 0 && <p style={{ color:C.muted, textAlign:"center", paddingTop:40 }}>Sin partidos jugados aún.</p>}
+      {filtered.map(m => {
         const p1 = players.find(p=>p.id===m.p1), p2 = players.find(p=>p.id===m.p2);
         const r = m.result;
         return (
           <div key={m.id} style={{ background:C.white, border:`1px solid ${C.border}`, borderRadius:10, padding:"14px 18px", marginBottom:10, boxShadow:`0 1px 6px ${C.shadow}` }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
               <span style={{ fontSize:11, color:C.muted, fontWeight:600 }}>
-                {phaseLabel[m.phase]}{m.phase==="group" ? ` · Grupo ${String.fromCharCode(65+m.group)}` : ""}
+                {phaseLabel[m.phase] || m.phase}{m.phase==="group" ? ` · Grupo ${String.fromCharCode(65+m.group)}` : ""}
               </span>
-              {r.walkover && <span style={{ fontSize:11, color:C.lose, fontWeight:700, background:C.loseBg, padding:"2px 8px", borderRadius:10 }}>WALK OVER</span>}
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                {r.arbitro && <span style={{ fontSize:11, color:C.tealMd }}>🧑‍⚖️ {r.arbitro}</span>}
+                {r.walkover && <span style={{ fontSize:11, color:C.lose, fontWeight:700, background:C.loseBg, padding:"2px 8px", borderRadius:10 }}>WALK OVER</span>}
+              </div>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr auto 1fr", alignItems:"center", gap:8 }}>
               <span style={{ color: r.winner===m.p1 ? C.teal : C.muted, fontWeight: r.winner===m.p1 ? 700 : 400, fontSize:14 }}>{p1?.name}</span>
@@ -1388,7 +1445,7 @@ function HistoryView({ tournament }) {
 }
 
 // ─── SETUP VIEW ───────────────────────────────────────────────────────────────
-function SetupView({ tournament, onUpdate }) {
+function SetupView({ tournament, onUpdate, isAdmin }) {
   const { players, numGroups } = tournament;
   // localNames keyed by player id — sobrevive al shuffle
   const [localNames, setLocalNames] = useState(() => {
@@ -1427,20 +1484,22 @@ function SetupView({ tournament, onUpdate }) {
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
         <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Configuración del torneo</h2>
-        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          {alreadyShuffled ? (
-            <span style={{ fontSize:12, color:C.muted, background:C.bg, border:`1px solid ${C.border}`, borderRadius:9, padding:"8px 14px" }}>
-              ✓ Grupos sorteados
-            </span>
-          ) : (
-            <button onClick={handleShuffle} style={{ padding:"8px 16px", background:C.tealLt, border:`1px solid ${C.teal}33`, borderRadius:9, color:C.teal, cursor:"pointer", fontSize:13, fontWeight:600 }}>
-              🔀 Sortear grupos
+        {isAdmin && (
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            {alreadyShuffled ? (
+              <span style={{ fontSize:12, color:C.muted, background:C.bg, border:`1px solid ${C.border}`, borderRadius:9, padding:"8px 14px" }}>
+                ✓ Grupos sorteados
+              </span>
+            ) : (
+              <button onClick={handleShuffle} style={{ padding:"8px 16px", background:C.tealLt, border:`1px solid ${C.teal}33`, borderRadius:9, color:C.teal, cursor:"pointer", fontSize:13, fontWeight:600 }}>
+                🔀 Sortear grupos
+              </button>
+            )}
+            <button onClick={handleStart} style={{ padding:"8px 20px", background:C.teal, border:"none", borderRadius:9, color:C.white, cursor:"pointer", fontSize:13, fontWeight:700 }}>
+              Iniciar torneo →
             </button>
-          )}
-          <button onClick={handleStart} style={{ padding:"8px 20px", background:C.teal, border:"none", borderRadius:9, color:C.white, cursor:"pointer", fontSize:13, fontWeight:700 }}>
-            Iniciar torneo →
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(260px,1fr))", gap:16 }}>
@@ -1472,7 +1531,7 @@ function SetupView({ tournament, onUpdate }) {
 }
 
 // ─── TOURNAMENT DETAIL ────────────────────────────────────────────────────────
-function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail }) {
+function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail, isAdmin, canEdit, userRole }) {
   const tabs = tournament.phase === "setup"
     ? [{ id:"setup", label:"Grupos" }]
     : tournament.phase === "roundrobin"
@@ -1483,13 +1542,23 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail })
 
   const defaultTab = tabs[0].id;
   const [tab, setTab] = useState(defaultTab);
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(tournament.name);
 
   useEffect(() => { setTab(tabs[0].id); }, [tournament.phase]);
+
+  const handleRename = () => {
+    const clean = sanitize(newName);
+    if (!clean) return;
+    onUpdate({ ...tournament, name: clean });
+    setEditingName(false);
+  };
 
   return (
     <div style={{ minHeight:"100vh", background:C.bg, fontFamily:FONT_BODY }}>
       <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
       <Watermark/>
+      {showUserMgmt && <UserManagement onClose={() => setShowUserMgmt(false)}/>}
 
       {/* Header */}
       <header style={{ background:C.teal, padding:"20px 24px 0" }}>
@@ -1500,6 +1569,10 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail })
             </button>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <span style={{ fontSize:12, color:"rgba(255,255,255,0.5)" }}>{userEmail}</span>
+              <span style={{ fontSize:11, color:"rgba(255,255,255,0.9)",
+                background:"rgba(255,255,255,0.15)", padding:"3px 9px", borderRadius:20, fontWeight:700 }}>
+                {userRole==="admin" ? "Admin" : userRole==="arbitro" ? "Árbitro" : "Lector"}
+              </span>
               <button onClick={onLogout} style={{ background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", borderRadius:8, color:"rgba(255,255,255,0.7)", cursor:"pointer", fontSize:12, padding:"5px 12px" }}>
                 Salir
               </button>
@@ -1507,9 +1580,31 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail })
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:16 }}>
             <Logo size={44}/>
-            <div>
+            <div style={{ flex:1 }}>
               <p style={{ margin:0, color:"rgba(255,255,255,0.55)", fontSize:11, letterSpacing:1 }}>TORNEO</p>
-              <h1 style={{ margin:0, color:C.white, fontFamily:FONT_DISPLAY, fontWeight:800, fontSize:22 }}>{tournament.name}</h1>
+              {editingName ? (
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:4 }}>
+                  <input
+                    value={newName}
+                    onChange={e => setNewName(sanitize(e.target.value))}
+                    maxLength={80}
+                    autoFocus
+                    onKeyDown={e => { if(e.key==="Enter") handleRename(); if(e.key==="Escape") setEditingName(false); }}
+                    style={{ padding:"6px 10px", borderRadius:8, border:"none", fontSize:18, fontWeight:800, fontFamily:FONT_DISPLAY, outline:`2px solid ${C.accent}`, background:"rgba(255,255,255,0.15)", color:C.white, width:220 }}
+                  />
+                  <button onClick={handleRename} style={{ padding:"6px 12px", background:C.accent, border:"none", borderRadius:7, color:C.teal, fontWeight:700, cursor:"pointer", fontSize:12 }}>✓</button>
+                  <button onClick={() => { setEditingName(false); setNewName(tournament.name); }} style={{ padding:"6px 10px", background:"rgba(255,255,255,0.1)", border:"none", borderRadius:7, color:"rgba(255,255,255,0.7)", cursor:"pointer", fontSize:12 }}>✕</button>
+                </div>
+              ) : (
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <h1 style={{ margin:0, color:C.white, fontFamily:FONT_DISPLAY, fontWeight:800, fontSize:22 }}>{tournament.name}</h1>
+                  {isAdmin && (
+                    <button onClick={() => setEditingName(true)} style={{ background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", borderRadius:7, color:"rgba(255,255,255,0.6)", cursor:"pointer", fontSize:11, padding:"3px 9px" }}>
+                      ✏️ Renombrar
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <nav style={{ display:"flex", gap:2 }}>
@@ -1525,10 +1620,10 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail })
       </header>
 
       <main style={{ maxWidth:900, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="setup"      && <SetupView       tournament={tournament} onUpdate={onUpdate}/>}
-        {tab==="groups"     && <GroupPhaseView  tournament={tournament} onUpdate={onUpdate}/>}
-        {tab==="roundrobin" && <RoundRobinView  tournament={tournament} onUpdate={onUpdate}/>}
-        {tab==="bracket"    && <KnockoutView    tournament={tournament} onUpdate={onUpdate}/>}
+        {tab==="setup"      && <SetupView       tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="groups"     && <GroupPhaseView  tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="roundrobin" && <RoundRobinView  tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
+        {tab==="bracket"    && <KnockoutView    tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin} canEdit={canEdit}/>}
         {tab==="ranking"    && <RankingView     tournament={tournament}/>}
         {tab==="history"    && <HistoryView     tournament={tournament}/>}
       </main>
@@ -1538,22 +1633,127 @@ function TournamentDetail({ tournament, onUpdate, onBack, onLogout, userEmail })
 
 
 
+// ─── USER MANAGEMENT (Admin only) ────────────────────────────────────────────
+function UserManagement({ onClose }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newEmail, setNewEmail] = useState("");
+  const [newRole, setNewRole] = useState("arbitro");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "users"), snap => {
+      setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const handleAddUser = async () => {
+    const clean = sanitize(newEmail).toLowerCase();
+    if (!clean || !clean.includes("@")) { setMsg("Email inválido"); return; }
+    setSaving(true);
+    await setDoc(doc(db, "users", clean), { email: clean, role: newRole, createdAt: Date.now() });
+    setMsg("✓ Usuario agregado");
+    setNewEmail(""); setSaving(false);
+    setTimeout(() => setMsg(""), 2000);
+  };
+
+  const handleChangeRole = async (email, role) => {
+    await setDoc(doc(db, "users", email), { email, role }, { merge: true });
+  };
+
+  const handleDelete = async (email) => {
+    if (confirm(`¿Eliminar acceso de ${email}?`)) {
+      await deleteDoc(doc(db, "users", email));
+    }
+  };
+
+  const roleLabel = { admin: "Admin", arbitro: "Árbitro", lector: "Lector" };
+  const roleColor = { admin: C.teal, arbitro: C.accent, lector: C.muted };
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(26,46,46,0.6)", backdropFilter:"blur(4px)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:16 }}>
+      <div style={{ background:C.white, borderRadius:16, padding:28, width:"100%", maxWidth:480, maxHeight:"90vh", overflowY:"auto", boxShadow:`0 20px 60px ${C.shadowMd}` }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <h3 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Gestión de usuarios</h3>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:22 }}>×</button>
+        </div>
+
+        {/* Add user */}
+        <div style={{ background:C.tealXlt, borderRadius:10, padding:16, marginBottom:20 }}>
+          <p style={{ margin:"0 0 10px", fontSize:13, color:C.teal, fontWeight:700 }}>Agregar usuario</p>
+          <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+            <input
+              value={newEmail} onChange={e => setNewEmail(sanitize(e.target.value))}
+              placeholder="email@ejemplo.com" maxLength={80}
+              style={{ flex:1, padding:"9px 12px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, outline:"none" }}
+            />
+            <select value={newRole} onChange={e => setNewRole(e.target.value)}
+              style={{ padding:"9px 12px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, color:C.teal, fontWeight:600, background:C.white, outline:"none" }}>
+              <option value="admin">Admin</option>
+              <option value="arbitro">Árbitro</option>
+            </select>
+          </div>
+          <button onClick={handleAddUser} disabled={saving} style={{ width:"100%", padding:"9px", background:C.teal, border:"none", borderRadius:8, color:C.white, fontWeight:700, cursor:"pointer", fontSize:13 }}>
+            {saving ? "Guardando..." : "+ Agregar"}
+          </button>
+          {msg && <p style={{ margin:"8px 0 0", fontSize:12, color:C.win, textAlign:"center" }}>{msg}</p>}
+        </div>
+
+        {/* User list */}
+        <p style={{ margin:"0 0 10px", fontSize:12, color:C.muted, fontWeight:600, letterSpacing:.5 }}>USUARIOS REGISTRADOS</p>
+        {loading && <p style={{ color:C.muted, fontSize:13 }}>Cargando...</p>}
+        {users.map(u => (
+          <div key={u.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:C.bg, borderRadius:9, marginBottom:8, border:`1px solid ${C.border}` }}>
+            <div style={{ flex:1 }}>
+              <p style={{ margin:0, fontSize:13, color:C.text, fontWeight:500 }}>{u.email}</p>
+            </div>
+            <select value={u.role} onChange={e => handleChangeRole(u.email, e.target.value)}
+              style={{ padding:"5px 8px", borderRadius:7, border:`1.5px solid ${roleColor[u.role] || C.border}`, fontSize:12, color:roleColor[u.role] || C.text, fontWeight:700, background:C.white, outline:"none", cursor:"pointer" }}>
+              <option value="admin">Admin</option>
+              <option value="arbitro">Árbitro</option>
+              <option value="lector">Lector</option>
+            </select>
+            <button onClick={() => handleDelete(u.email)} style={{ background:"none", border:"none", color:C.mutedLt, cursor:"pointer", fontSize:18, lineHeight:1 }}>×</button>
+          </div>
+        ))}
+        {!loading && users.length === 0 && <p style={{ color:C.muted, fontSize:13, textAlign:"center" }}>No hay usuarios registrados aún.</p>}
+      </div>
+    </div>
+  );
+}
+
 // ─── WATERMARK ────────────────────────────────────────────────────────────────
 function Watermark() {
   return (
     <div style={{
-      position:"fixed", bottom:14, right:16, zIndex:999,
+      position:"fixed", bottom:18, right:18, zIndex:999,
       pointerEvents:"none", userSelect:"none",
-      display:"flex", alignItems:"center", gap:6,
-      opacity:0.35,
+      display:"flex", alignItems:"center", gap:8,
+      opacity:0.55,
+      background:"rgba(255,255,255,0.85)",
+      backdropFilter:"blur(6px)",
+      borderRadius:20,
+      padding:"5px 12px 5px 8px",
+      boxShadow:"0 2px 10px rgba(29,92,92,0.12)",
+      border:`1px solid ${C.border}`,
     }}>
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <circle cx="8" cy="8" r="7" stroke={C.teal} strokeWidth="1.5"/>
-        <text x="8" y="11.5" textAnchor="middle" fill={C.teal} fontSize="8" fontWeight="700" fontFamily="serif">M</text>
+      {/* MBB monogram */}
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+        <circle cx="11" cy="11" r="10" fill={C.teal}/>
+        <text x="11" y="15" textAnchor="middle" fill="white" fontSize="9" fontWeight="800"
+          fontFamily="'Space Grotesk', sans-serif" letterSpacing="-0.5">MBB</text>
       </svg>
-      <span style={{ fontSize:11, color:C.teal, fontFamily:FONT_DISPLAY, fontWeight:600, letterSpacing:.5 }}>
-        Melissa Berdeja
-      </span>
+      <div>
+        <div style={{ fontSize:10, color:C.teal, fontFamily:FONT_DISPLAY, fontWeight:800, lineHeight:1.2, letterSpacing:.3 }}>
+          Melissa Berdeja
+        </div>
+        <div style={{ fontSize:8.5, color:C.muted, fontFamily:FONT_BODY, lineHeight:1.2, letterSpacing:.2 }}>
+          Dev &amp; Design
+        </div>
+      </div>
     </div>
   );
 }
@@ -1627,13 +1827,40 @@ function LoginScreen() {
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = cargando, null = no logueado
+  const [userRole, setUserRole] = useState(null); // "admin" | "arbitro" | "lector"
+  const [roleLoading, setRoleLoading] = useState(true);
   const [tournaments, setTournaments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
 
   // Auth state listener
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u ?? null));
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u ?? null);
+      if (u) {
+        setRoleLoading(true);
+        try {
+          // Use email as document ID (lowercase)
+          const emailKey = (u.email || "").toLowerCase().trim();
+          const snap = await getDoc(doc(db, "users", emailKey));
+          if (snap.exists()) {
+            const role = snap.data().role;
+            setUserRole(["admin","arbitro","lector"].includes(role) ? role : "arbitro");
+          } else {
+            // No doc → default admin (first user)
+            setUserRole("admin");
+          }
+        } catch(e) {
+          console.error("Role fetch error:", e);
+          setUserRole("admin");
+        } finally {
+          setRoleLoading(false);
+        }
+      } else {
+        setUserRole(null);
+        setRoleLoading(false);
+      }
+    });
     return () => unsub();
   }, []);
 
@@ -1676,8 +1903,8 @@ export default function App() {
     setTournaments([]);
   };
 
-  // Pantalla de carga inicial (verificando auth)
-  if (user === undefined) return (
+  // Pantalla de carga inicial (verificando auth o rol)
+  if (user === undefined || roleLoading) return (
     <div style={{ minHeight:"100vh", background:C.teal, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16, fontFamily:"Inter, sans-serif" }}>
       <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
       <Logo size={56}/>
@@ -1699,6 +1926,9 @@ export default function App() {
 
   const open = openId ? tournaments.find(t => t.id === openId) : null;
 
+  const isAdmin  = userRole === "admin";
+  const canEdit  = userRole === "admin" || userRole === "arbitro"; // puede cargar resultados
+
   if (open) {
     return <TournamentDetail
       tournament={open}
@@ -1706,6 +1936,9 @@ export default function App() {
       onBack={() => setOpenId(null)}
       onLogout={handleLogout}
       userEmail={user.email}
+      isAdmin={isAdmin}
+      canEdit={canEdit}
+      userRole={userRole}
     />;
   }
 
@@ -1716,5 +1949,8 @@ export default function App() {
     onDelete={handleDelete}
     onLogout={handleLogout}
     userEmail={user.email}
+    isAdmin={isAdmin}
+    canEdit={canEdit}
+    userRole={userRole}
   />;
 }
