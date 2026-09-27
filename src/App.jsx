@@ -1943,6 +1943,7 @@ function UserManagement({ onClose }) {
               style={{ padding:"9px 12px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, color:C.teal, fontWeight:600, background:C.white, outline:"none" }}>
               <option value="admin">Admin</option>
               <option value="arbitro">Árbitro</option>
+              <option value="lector">Lector</option>
             </select>
           </div>
           <button onClick={handleAddUser} disabled={saving} style={{ width:"100%", padding:"9px", background:C.teal, border:"none", borderRadius:8, color:C.white, fontWeight:700, cursor:"pointer", fontSize:13 }}>
