@@ -387,7 +387,7 @@ function buildLigaClassification(players, matches) {
 }
 
 // ─── SCORE MODAL ──────────────────────────────────────────────────────────────
-function ScoreModal({ match, players, onSave, onClose }) {
+function ScoreModal({ match, players, onSave, onClose, arbitros = [] }) {
   const p1 = players.find(p => p.id === match.p1);
   const p2 = players.find(p => p.id === match.p2);
   const [sets, setSets] = useState(
@@ -528,22 +528,54 @@ function ScoreModal({ match, players, onSave, onClose }) {
           <label style={{ display:"block", fontSize:12, color:C.teal, fontWeight:700, marginBottom:6, letterSpacing:.5 }}>
             ÁRBITRO <span style={{ color:C.lose }}>*</span>
           </label>
-          <input
-            value={arbitroName}
-            onChange={e => setArbitroName(sanitize(e.target.value))}
-            placeholder="Nombre del árbitro"
-            maxLength={60}
-            style={{
-              width:"100%", padding:"10px 12px", borderRadius:9,
-              border:`1.5px solid ${arbitroName.trim().length >= 2 ? C.teal : C.border}`,
-              fontSize:13, color:C.text, boxSizing:"border-box", outline:"none",
-              background:C.bg,
-            }}
-          />
-          {arbitroName.trim().length > 0 && arbitroName.trim().length < 2 && (
+          {arbitros.length > 0 ? (
+            <select
+              value={arbitroName}
+              onChange={e => setArbitroName(e.target.value)}
+              style={{
+                width:"100%", padding:"10px 12px", borderRadius:9,
+                border:`1.5px solid ${arbitroName.trim().length >= 2 ? C.teal : C.border}`,
+                fontSize:13, color: arbitroName ? C.text : C.muted,
+                background:C.bg, outline:"none", boxSizing:"border-box",
+              }}
+            >
+              <option value="">— Seleccionar árbitro —</option>
+              {arbitros.map(a => (
+                <option key={a.id} value={a.name}>{a.name}</option>
+              ))}
+              <option value="__other__">Otro (ingresar manualmente)</option>
+            </select>
+          ) : (
+            <input
+              value={arbitroName}
+              onChange={e => setArbitroName(sanitize(e.target.value))}
+              placeholder="Nombre del árbitro"
+              maxLength={60}
+              style={{
+                width:"100%", padding:"10px 12px", borderRadius:9,
+                border:`1.5px solid ${arbitroName.trim().length >= 2 ? C.teal : C.border}`,
+                fontSize:13, color:C.text, boxSizing:"border-box", outline:"none", background:C.bg,
+              }}
+            />
+          )}
+          {/* Manual input when "Otro" is selected */}
+          {arbitroName === "__other__" && (
+            <input
+              autoFocus
+              placeholder="Nombre del árbitro"
+              maxLength={60}
+              onChange={e => setArbitroName(sanitize(e.target.value))}
+              style={{
+                width:"100%", padding:"10px 12px", borderRadius:9, marginTop:8,
+                border:`1.5px solid ${C.teal}`, fontSize:13, color:C.text,
+                boxSizing:"border-box", outline:"none", background:C.bg,
+              }}
+            />
+          )}
+          {arbitroName.trim().length > 0 && arbitroName.trim().length < 2 && arbitroName !== "__other__" && (
             <p style={{ margin:"4px 0 0", fontSize:11, color:C.lose }}>Mínimo 2 caracteres</p>
           )}
-          {arbitroName.trim().length === 0 && (
+          {!arbitroName && (
             <p style={{ margin:"4px 0 0", fontSize:11, color:C.muted }}>Requerido para guardar</p>
           )}
         </div>
@@ -576,6 +608,11 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
   const [playerData, setPlayerData] = useState(
     Array.from({length:8}, (_, i) => ({ name: `Jugador ${i+1}`, group: 0 }))
   );
+  const [arbitrosList, setArbitrosList] = useState([{ id: uid(), name: "" }]);
+
+  const addArbitro = () => setArbitrosList(prev => [...prev, { id: uid(), name: "" }]);
+  const updateArbitro = (id, val) => setArbitrosList(prev => prev.map(a => a.id === id ? { ...a, name: sanitize(val) } : a));
+  const removeArbitro = (id) => setArbitrosList(prev => prev.length > 1 ? prev.filter(a => a.id !== id) : prev);
 
   useEffect(() => {
     setPlayerData(prev => Array.from({length:numPlayers}, (_, i) => ({
@@ -604,13 +641,16 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
       name: pd.name || `Jugador ${i+1}`,
       group: isRR ? 0 : Math.min(pd.group ?? 0, ng - 1),
     }));
+    const arbitros = arbitrosList.filter(a => a.name.trim().length >= 2).map(a => ({ id: a.id, name: a.name.trim() }));
     onCreate({
       id: uid(), name: cleanName, createdAt: Date.now(),
       phase: "setup", tournType,
       players, matches: [], koMatches: [], ligaMatches: [], numGroups: ng,
+      arbitros,
     });
     setShowNew(false); setName(""); setNumPlayers(8); setNumGroups(2);
     setPlayerData(Array.from({length:8}, (_, i) => ({ name: `Jugador ${i+1}`, group: 0 })));
+    setArbitrosList([{ id: uid(), name: "" }]);
   };
 
   const statusLabel = (t) => {
@@ -828,6 +868,34 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
               ))}
             </div>
 
+            {/* Árbitros del torneo */}
+            <div style={{ marginBottom:24 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                <label style={{ fontSize:13, color:C.teal, fontWeight:600 }}>Árbitros del torneo</label>
+                <button onClick={addArbitro} style={{ padding:"5px 12px", background:C.tealLt, border:`1px solid ${C.teal}33`, borderRadius:8, color:C.teal, cursor:"pointer", fontSize:12, fontWeight:600 }}>
+                  + Agregar
+                </button>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {arbitrosList.map((a, i) => (
+                  <div key={a.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px", background:C.tealXlt, borderRadius:9, border:`1px solid ${C.teal}22` }}>
+                    <span style={{ color:C.tealMd, fontSize:13, minWidth:20, fontWeight:600 }}>#{i+1}</span>
+                    <input
+                      value={a.name}
+                      onChange={e => updateArbitro(a.id, e.target.value)}
+                      placeholder={`Árbitro ${i+1}`}
+                      maxLength={60}
+                      style={{ flex:1, background:"none", border:"none", outline:"none", color:C.text, fontSize:13 }}
+                    />
+                    {arbitrosList.length > 1 && (
+                      <button onClick={() => removeArbitro(a.id)} style={{ background:"none", border:"none", color:C.mutedLt, cursor:"pointer", fontSize:16, lineHeight:1, padding:0 }}>×</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p style={{ margin:"6px 0 0", fontSize:11, color:C.muted }}>Estos árbitros estarán disponibles al cargar resultados</p>
+            </div>
+
             <button onClick={handleCreate} disabled={!name.trim()} style={{
               width:"100%", padding:"13px", background: name.trim() ? C.teal : C.border, border:"none",
               borderRadius:10, color: name.trim() ? C.white : C.muted, fontWeight:700, fontSize:15,
@@ -844,6 +912,7 @@ function TournamentHome({ tournaments, onCreate, onOpen, onDelete, onLogout, use
 
 // ─── LIGA GROUPS VIEW ────────────────────────────────────────────────────────
 function LigaGroupsView({ tournament, onUpdate, isAdmin, canEdit }) {
+  const arbitros = tournament.arbitros || [];
   const { players, matches, numGroups } = tournament;
   const [modal, setModal] = useState(null);
   const stats = computeGroupStats(players, matches);
@@ -862,7 +931,7 @@ function LigaGroupsView({ tournament, onUpdate, isAdmin, canEdit }) {
 
   return (
     <div>
-      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+      {modal && <ScoreModal match={modal} players={players} arbitros={arbitros} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
         <div>
@@ -935,6 +1004,7 @@ function LigaGroupsView({ tournament, onUpdate, isAdmin, canEdit }) {
 
 // ─── LIGA CLASS VIEW ──────────────────────────────────────────────────────────
 function LigaClassView({ tournament, onUpdate, isAdmin, canEdit }) {
+  const arbitros = tournament.arbitros || [];
   const { players, matches, ligaMatches = [] } = tournament;
   const [modal, setModal] = useState(null);
 
@@ -969,7 +1039,7 @@ function LigaClassView({ tournament, onUpdate, isAdmin, canEdit }) {
 
   return (
     <div>
-      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+      {modal && <ScoreModal match={modal} players={players} arbitros={arbitros} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
         <div>
@@ -1033,6 +1103,7 @@ function LigaClassView({ tournament, onUpdate, isAdmin, canEdit }) {
 
 // ─── ROUND ROBIN VIEW ────────────────────────────────────────────────────────
 function RoundRobinView({ tournament, onUpdate, isAdmin, canEdit }) {
+  const arbitros = tournament.arbitros || [];
   const { players, matches } = tournament;
   const [modal, setModal] = useState(null);
 
@@ -1064,7 +1135,7 @@ function RoundRobinView({ tournament, onUpdate, isAdmin, canEdit }) {
 
   return (
     <div>
-      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+      {modal && <ScoreModal match={modal} players={players} arbitros={arbitros} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
         <div>
@@ -1129,6 +1200,7 @@ function RoundRobinView({ tournament, onUpdate, isAdmin, canEdit }) {
 
 // ─── GROUP PHASE VIEW ─────────────────────────────────────────────────────────
 function GroupPhaseView({ tournament, onUpdate, isAdmin, canEdit }) {
+  const arbitros = tournament.arbitros || [];
   const { players, matches, numGroups } = tournament;
   const [modal, setModal] = useState(null);
   const stats = computeGroupStats(players, matches);
@@ -1147,8 +1219,9 @@ function GroupPhaseView({ tournament, onUpdate, isAdmin, canEdit }) {
 
   return (
     <div>
-      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+      {modal && <ScoreModal match={modal} players={players} arbitros={arbitros} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
 
+      <ArbitrosManager tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin}/>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
         <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Fase de Grupos</h2>
         {allDone && (
@@ -1436,7 +1509,7 @@ function KnockoutView({ tournament, onUpdate, isAdmin, canEdit }) {
 
   return (
     <div>
-      {modal && <ScoreModal match={modal} players={players} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
+      {modal && <ScoreModal match={modal} players={players} arbitros={arbitros} onSave={r=>handleScore(modal.id,r)} onClose={()=>setModal(null)}/>}
       {showManualDraw && (
         <ManualDrawModal
           koMatches={koMatches}
@@ -1631,6 +1704,7 @@ function RankingView({ tournament }) {
 
 // ─── HISTORY ──────────────────────────────────────────────────────────────────
 function HistoryView({ tournament }) {
+  const [viewMode, setViewMode] = useState("partidos"); // "partidos" | "arbitros"
   const { players, matches, koMatches } = tournament;
   const [filterPlayer, setFilterPlayer] = useState(""); // player id or ""
   const allMatches = [...(matches||[]), ...(koMatches||[]), ...(tournament.ligaMatches||[])].filter(m=>m.result).reverse();
@@ -1645,25 +1719,127 @@ function HistoryView({ tournament }) {
   return (
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:10 }}>
-        <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Historial de partidos</h2>
+        <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Historial</h2>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <select
-            value={filterPlayer}
-            onChange={e => setFilterPlayer(e.target.value)}
-            style={{ padding:"8px 12px", borderRadius:9, border:`1.5px solid ${filterPlayer ? C.teal : C.border}`, fontSize:13, color: filterPlayer ? C.teal : C.muted, fontWeight: filterPlayer ? 700 : 400, background:C.white, outline:"none", cursor:"pointer" }}
-          >
-            <option value="">Todos los jugadores</option>
-            {[...players].sort((a,b)=>a.name.localeCompare(b.name)).map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+          {/* Toggle */}
+          <div style={{ display:"flex", background:C.bg, borderRadius:9, border:`1px solid ${C.border}`, overflow:"hidden" }}>
+            {["partidos","arbitros"].map(m => (
+              <button key={m} onClick={() => setViewMode(m)} style={{
+                padding:"7px 14px", border:"none", fontSize:13, fontWeight: viewMode===m ? 700 : 400,
+                background: viewMode===m ? C.teal : "transparent",
+                color: viewMode===m ? C.white : C.muted, cursor:"pointer",
+              }}>
+                {m === "partidos" ? "Partidos" : "Árbitros"}
+              </button>
             ))}
-          </select>
-          {filterPlayer && (
-            <button onClick={() => setFilterPlayer("")} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:18, lineHeight:1 }}>×</button>
+          </div>
+          {viewMode === "partidos" && (
+            <>
+              <select
+                value={filterPlayer}
+                onChange={e => setFilterPlayer(e.target.value)}
+                style={{ padding:"8px 12px", borderRadius:9, border:`1.5px solid ${filterPlayer ? C.teal : C.border}`, fontSize:13, color: filterPlayer ? C.teal : C.muted, fontWeight: filterPlayer ? 700 : 400, background:C.white, outline:"none", cursor:"pointer" }}
+              >
+                <option value="">Todos los jugadores</option>
+                {[...players].sort((a,b)=>a.name.localeCompare(b.name)).map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              {/* ── Vista por árbitros ── */}
+      {viewMode === "arbitros" && (() => {
+        const arbStats = {};
+        allMatches.forEach(m => {
+          const arb = m.result?.arbitro;
+          if (!arb || arb === "__other__") return;
+          if (!arbStats[arb]) arbStats[arb] = { name: arb, total: 0, walkover: 0, phases: {} };
+          arbStats[arb].total++;
+          if (m.result.walkover) arbStats[arb].walkover++;
+          const ph = m.phase || "grupo";
+          arbStats[arb].phases[ph] = (arbStats[arb].phases[ph] || 0) + 1;
+        });
+        const sorted = Object.values(arbStats).sort((a,b) => b.total - a.total);
+        const phaseLabel = { group:"Grupos", qf:"Cuartos", sf:"Semis", final:"Final", bronze:"3° Puesto", roundrobin:"TcT", liga_class:"Liga" };
+        return (
+          <div>
+            {sorted.length === 0 && (
+              <p style={{ color:C.muted, textAlign:"center", paddingTop:40 }}>Sin partidos con árbitro registrado aún.</p>
+            )}
+            <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 10px ${C.shadow}` }}>
+              {sorted.length > 0 && (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 60px 60px", padding:"10px 16px", fontSize:10, color:C.mutedLt, fontWeight:700, letterSpacing:.5, borderBottom:`1px solid ${C.border}`, gap:4 }}>
+                  <span>ÁRBITRO</span><span style={{textAlign:"center"}}>PARTIDOS</span><span style={{textAlign:"center"}}>W/O</span>
+                </div>
+              )}
+              {sorted.map((a, i) => (
+                <div key={a.name} style={{ display:"grid", gridTemplateColumns:"1fr 60px 60px", padding:"12px 16px", gap:4, alignItems:"center", background: i%2===0 ? C.bg : C.white, borderBottom:`1px solid ${C.border}33` }}>
+                  <div>
+                    <p style={{ margin:0, fontSize:14, color:C.text, fontWeight:500 }}>🧑‍⚖️ {a.name}</p>
+                    <p style={{ margin:"2px 0 0", fontSize:11, color:C.muted }}>
+                      {Object.entries(a.phases).map(([ph,cnt]) => `${phaseLabel[ph]||ph}: ${cnt}`).join(" · ")}
+                    </p>
+                  </div>
+                  <span style={{ textAlign:"center", fontSize:16, fontWeight:700, color:C.teal }}>{a.total}</span>
+                  <span style={{ textAlign:"center", fontSize:14, color: a.walkover > 0 ? C.lose : C.muted }}>{a.walkover || "–"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Vista por partidos ── */}
+      {viewMode === "partidos" && filterPlayer && (
+                <button onClick={() => setFilterPlayer("")} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:18, lineHeight:1 }}>×</button>
+              )}
+            </>
           )}
         </div>
       </div>
 
-      {filterPlayer && (
+      {/* ── Vista por árbitros ── */}
+      {viewMode === "arbitros" && (() => {
+        const arbStats = {};
+        allMatches.forEach(m => {
+          const arb = m.result?.arbitro;
+          if (!arb || arb === "__other__") return;
+          if (!arbStats[arb]) arbStats[arb] = { name: arb, total: 0, walkover: 0, phases: {} };
+          arbStats[arb].total++;
+          if (m.result.walkover) arbStats[arb].walkover++;
+          const ph = m.phase || "grupo";
+          arbStats[arb].phases[ph] = (arbStats[arb].phases[ph] || 0) + 1;
+        });
+        const sorted = Object.values(arbStats).sort((a,b) => b.total - a.total);
+        const phaseLabel = { group:"Grupos", qf:"Cuartos", sf:"Semis", final:"Final", bronze:"3° Puesto", roundrobin:"TcT", liga_class:"Liga" };
+        return (
+          <div>
+            {sorted.length === 0 && (
+              <p style={{ color:C.muted, textAlign:"center", paddingTop:40 }}>Sin partidos con árbitro registrado aún.</p>
+            )}
+            <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 10px ${C.shadow}` }}>
+              {sorted.length > 0 && (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 60px 60px", padding:"10px 16px", fontSize:10, color:C.mutedLt, fontWeight:700, letterSpacing:.5, borderBottom:`1px solid ${C.border}`, gap:4 }}>
+                  <span>ÁRBITRO</span><span style={{textAlign:"center"}}>PARTIDOS</span><span style={{textAlign:"center"}}>W/O</span>
+                </div>
+              )}
+              {sorted.map((a, i) => (
+                <div key={a.name} style={{ display:"grid", gridTemplateColumns:"1fr 60px 60px", padding:"12px 16px", gap:4, alignItems:"center", background: i%2===0 ? C.bg : C.white, borderBottom:`1px solid ${C.border}33` }}>
+                  <div>
+                    <p style={{ margin:0, fontSize:14, color:C.text, fontWeight:500 }}>🧑‍⚖️ {a.name}</p>
+                    <p style={{ margin:"2px 0 0", fontSize:11, color:C.muted }}>
+                      {Object.entries(a.phases).map(([ph,cnt]) => `${phaseLabel[ph]||ph}: ${cnt}`).join(" · ")}
+                    </p>
+                  </div>
+                  <span style={{ textAlign:"center", fontSize:16, fontWeight:700, color:C.teal }}>{a.total}</span>
+                  <span style={{ textAlign:"center", fontSize:14, color: a.walkover > 0 ? C.lose : C.muted }}>{a.walkover || "–"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Vista por partidos ── */}
+      {viewMode === "partidos" && filterPlayer && (
         <div style={{ background:C.tealXlt, borderRadius:10, padding:"10px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
           <span style={{ fontSize:13, color:C.teal, fontWeight:700 }}>🏓 {selectedPlayer?.name}</span>
           <span style={{ fontSize:12, color:C.muted }}>{filtered.length} partido{filtered.length!==1?"s":""}</span>
@@ -1676,8 +1852,8 @@ function HistoryView({ tournament }) {
         </div>
       )}
 
-      {filtered.length === 0 && <p style={{ color:C.muted, textAlign:"center", paddingTop:40 }}>Sin partidos jugados aún.</p>}
-      {filtered.map(m => {
+      {viewMode === "partidos" && filtered.length === 0 && <p style={{ color:C.muted, textAlign:"center", paddingTop:40 }}>Sin partidos jugados aún.</p>}
+      {viewMode === "partidos" && filtered.map(m => {
         const p1 = players.find(p=>p.id===m.p1), p2 = players.find(p=>p.id===m.p2);
         const r = m.result;
         return (
@@ -1710,6 +1886,82 @@ function HistoryView({ tournament }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ─── ARBITROS MANAGER ────────────────────────────────────────────────────────
+function ArbitrosManager({ tournament, onUpdate, isAdmin }) {
+  const arbitros = tournament.arbitros || [];
+  const [newName, setNewName] = useState("");
+
+  const handleAdd = () => {
+    const clean = sanitize(newName);
+    if (clean.length < 2) return;
+    const updated = [...arbitros, { id: uid(), name: clean }];
+    onUpdate({ ...tournament, arbitros: updated });
+    setNewName("");
+  };
+
+  const handleEdit = (id, val) => {
+    const clean = sanitize(val);
+    onUpdate({ ...tournament, arbitros: arbitros.map(a => a.id === id ? { ...a, name: clean } : a) });
+  };
+
+  const handleDelete = (id) => {
+    onUpdate({ ...tournament, arbitros: arbitros.filter(a => a.id !== id) });
+  };
+
+  return (
+    <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:`0 2px 8px ${C.shadow}`, marginBottom:20 }}>
+      <div style={{ padding:"12px 16px", background:C.tealXlt, borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <span style={{ fontFamily:FONT_DISPLAY, fontWeight:700, fontSize:15, color:C.teal }}>
+          🧑‍⚖️ Árbitros del torneo
+        </span>
+        <span style={{ fontSize:12, color:C.muted }}>{arbitros.length} registrado{arbitros.length !== 1 ? "s" : ""}</span>
+      </div>
+      <div style={{ padding:"12px 16px" }}>
+        {arbitros.length === 0 && (
+          <p style={{ fontSize:13, color:C.muted, margin:"0 0 12px", fontStyle:"italic" }}>Sin árbitros registrados aún.</p>
+        )}
+        {arbitros.map((a, i) => (
+          <div key={a.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", background:C.tealXlt, borderRadius:9, marginBottom:8, border:`1px solid ${C.teal}22` }}>
+            <span style={{ color:C.tealMd, fontSize:12, fontWeight:700, minWidth:20 }}>#{i+1}</span>
+            {isAdmin ? (
+              <input
+                value={a.name}
+                onChange={e => handleEdit(a.id, e.target.value)}
+                maxLength={60}
+                style={{ flex:1, background:"none", border:"none", outline:"none", color:C.text, fontSize:13 }}
+              />
+            ) : (
+              <span style={{ flex:1, fontSize:13, color:C.text }}>{a.name}</span>
+            )}
+            {isAdmin && (
+              <button onClick={() => handleDelete(a.id)} style={{ background:"none", border:"none", color:C.mutedLt, cursor:"pointer", fontSize:16, lineHeight:1, padding:0 }}>×</button>
+            )}
+          </div>
+        ))}
+        {isAdmin && (
+          <div style={{ display:"flex", gap:8, marginTop:8 }}>
+            <input
+              value={newName}
+              onChange={e => setNewName(sanitize(e.target.value))}
+              placeholder="Nombre del árbitro"
+              maxLength={60}
+              onKeyDown={e => e.key === "Enter" && handleAdd()}
+              style={{ flex:1, padding:"8px 12px", borderRadius:9, border:`1.5px solid ${C.border}`, fontSize:13, outline:"none", background:C.bg }}
+            />
+            <button onClick={handleAdd} disabled={newName.trim().length < 2} style={{
+              padding:"8px 16px", background: newName.trim().length >= 2 ? C.teal : C.border,
+              border:"none", borderRadius:9, color: newName.trim().length >= 2 ? C.white : C.muted,
+              cursor: newName.trim().length >= 2 ? "pointer" : "not-allowed", fontSize:13, fontWeight:600
+            }}>
+              + Agregar
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1752,6 +2004,7 @@ function SetupView({ tournament, onUpdate, isAdmin }) {
 
   return (
     <div>
+      <ArbitrosManager tournament={tournament} onUpdate={onUpdate} isAdmin={isAdmin}/>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
         <h2 style={{ margin:0, fontFamily:FONT_DISPLAY, color:C.teal, fontSize:18 }}>Configuración del torneo</h2>
         {isAdmin && (
