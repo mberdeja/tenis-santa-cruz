@@ -523,15 +523,41 @@ function ScoreModal({ match, players, onSave, onClose }) {
           </>
         )}
 
-        <div style={{ display:"flex", gap:10, marginTop:24 }}>
+        {/* Árbitro — siempre visible, obligatorio */}
+        <div style={{ marginTop:16 }}>
+          <label style={{ display:"block", fontSize:12, color:C.teal, fontWeight:700, marginBottom:6, letterSpacing:.5 }}>
+            ÁRBITRO <span style={{ color:C.lose }}>*</span>
+          </label>
+          <input
+            value={arbitroName}
+            onChange={e => setArbitroName(sanitize(e.target.value))}
+            placeholder="Nombre del árbitro"
+            maxLength={60}
+            style={{
+              width:"100%", padding:"10px 12px", borderRadius:9,
+              border:`1.5px solid ${arbitroName.trim().length >= 2 ? C.teal : C.border}`,
+              fontSize:13, color:C.text, boxSizing:"border-box", outline:"none",
+              background:C.bg,
+            }}
+          />
+          {arbitroName.trim().length > 0 && arbitroName.trim().length < 2 && (
+            <p style={{ margin:"4px 0 0", fontSize:11, color:C.lose }}>Mínimo 2 caracteres</p>
+          )}
+          {arbitroName.trim().length === 0 && (
+            <p style={{ margin:"4px 0 0", fontSize:11, color:C.muted }}>Requerido para guardar</p>
+          )}
+        </div>
+
+        <div style={{ display:"flex", gap:10, marginTop:16 }}>
           <button onClick={onClose} style={{ flex:1, padding:"11px", background:C.bg, border:`1px solid ${C.border}`, borderRadius:9, color:C.muted, cursor:"pointer", fontSize:14 }}>
             Cancelar
           </button>
           <button onClick={handleSave} disabled={!canSave} style={{
             flex:2, padding:"11px", background: canSave ? C.teal : C.border, border:"none",
-            borderRadius:9, color: canSave ? C.white : C.muted, fontWeight:700, cursor: canSave ? "pointer" : "not-allowed", fontSize:14
+            borderRadius:9, color: canSave ? C.white : C.muted, fontWeight:700,
+            cursor: canSave ? "pointer" : "not-allowed", fontSize:14,
           }}>
-            Guardar resultado
+            {canSave ? "Guardar resultado" : arbitroName.trim().length < 2 ? "Completar árbitro" : "Completar resultado"}
           </button>
         </div>
       </div>
